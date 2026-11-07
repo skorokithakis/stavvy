@@ -14,6 +14,7 @@
 #include "audio_self_test.h"
 #include "board_i2c.h"
 #include "board_power.h"
+#include "display.h"
 #include "esphome_api.h"
 #include "mdns_service.h"
 #include "player.h"
@@ -93,6 +94,9 @@ void app_main(void)
     // The player needs the audio module, and it can be ready before the network
     // so the first reply URL never arrives before there is something to play.
     player_init();
+    // The AMOLED is powered from ALDO3, so it needs the PMIC. This also creates
+    // the SPI2 bus it shares with the SD card.
+    display_init();
 
     // The default event loop has to exist before a handler can subscribe to it,
     // and the network stack has to be up before Wi-Fi starts.
@@ -127,6 +131,11 @@ void app_main(void)
     // firmware's steady state.
     trigger_init(handle_trigger);
     trigger_enable();
+
+    // There is no session task yet, so show every state once as a hardware
+    // check. It runs last so the network, wake word and display are all up
+    // before the demo holds the main task for about nine seconds.
+    display_run_boot_demo();
 
     if (player_test_network_ready != NULL) {
         const BaseType_t test_task_result =

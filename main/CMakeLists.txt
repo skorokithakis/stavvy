@@ -5,6 +5,7 @@ idf_component_register(
         "audio_self_test.c"
         "board_i2c.c"
         "board_power.c"
+        "display.c"
         "esphome_api.c"
         "proto/esphome_api.pb.c"
         "wifi_station.c"
@@ -16,14 +17,19 @@ idf_component_register(
         esp_driver_gpio
         esp_driver_i2c
         esp_driver_i2s
+        esp_driver_spi
         esp_event
         esp_http_client
+        esp_lcd
         esp_netif
         esp_timer
         esp_wifi
         esp_codec_dev
         espressif__esp-sr
         espressif__esp_audio_codec
+        espressif__esp_lcd_sh8601
+        espressif__esp_lvgl_port
+        lvgl__lvgl
         lwip
         mdns
         nanopb

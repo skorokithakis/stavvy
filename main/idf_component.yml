@@ -13,3 +13,12 @@ dependencies:
   # WakeNet9s from ESP-SR, used without the AFE. Pinned to the 2.3 series
   # because that is the version Waveshare's XiaoZhi firmware runs on this board.
   espressif/esp-sr: "~2.3.0"
+  # The CO5300 in this panel accepts the SH8601 QSPI command set, which is the
+  # driver Waveshare's own ESP-IDF example uses for it.
+  espressif/esp_lcd_sh8601: "~2.0.1"
+  # ESP LVGL port owns the LVGL task, tick and mutex; the display module only
+  # calls its lock around widget updates.
+  espressif/esp_lvgl_port: "^2.9.0"
+  # LVGL 9.5 is the version Waveshare's ESP-IDF example builds against. The
+  # 9.6 release is not needed by this screen and has not been tried on it.
+  lvgl/lvgl: "~9.5.0"

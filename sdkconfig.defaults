@@ -12,6 +12,18 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 # PSRAM. Select only Alexa so the packed model image stays small.
 CONFIG_SR_WN_WN9S_ALEXA=y
 
+# The status screen is four labels and a scrollable reply, so LVGL's own heap
+# does not need the 64 KB default. Creating the screen uses about 7 KB; 16 KB
+# leaves room for text and fragmentation. The 38.4 KB draw buffer is allocated
+# separately by esp_lvgl_port from the DMA-capable heap, and the display still
+# has to leave at least 60 KB free during MP3 playback.
+CONFIG_LV_MEM_SIZE_KILOBYTES=16
+# Only the two Montserrat sizes the screen uses are compiled in: 16 for the
+# state and transcript, 14 for the reply. 14 is LVGL's default; listing both
+# keeps the choice explicit and the other sizes out of flash.
+CONFIG_LV_FONT_MONTSERRAT_14=y
+CONFIG_LV_FONT_MONTSERRAT_16=y
+
 # The reply player only ever sees MP3 and 16-bit PCM WAV. esp_audio_codec turns
 # every decoder, container parser and encoder on by default, which would link
 # codecs the firmware never calls and spend flash on them; these are the only
