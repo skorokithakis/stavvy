@@ -1,0 +1,127 @@
+// A reduced copy of the ESPHome native API protocol
+// (esphome/components/api/api.proto), cut down to the messages that
+// havpe-server's voice pipeline actually uses. Field numbers and enum values
+// are copied verbatim because they are part of the wire format. Everything
+// else (entities, states, services, noise encryption) is deliberately absent.
+//
+// nanopb is used without dynamic allocation, so every string needs a maximum
+// length or an explicit callback, and every repeated field needs a maximum
+// count. The limits are sized for the reference client: audio chunks arrive in
+// 1024-byte PCM frames, and event data values use a callback because the LLM
+// reply and transcript can be thousands of bytes.
+//
+// The generated esphome_api.pb.c/.pb.h files are committed because the ESP-IDF
+// Docker image has no protobuf toolchain. Regenerate them with
+// main/proto/regenerate.sh after editing this file.
+
+syntax = "proto3";
+
+import "nanopb.proto";
+
+message HelloRequest {
+  string client_info = 1 [(nanopb).max_length = 64];
+  uint32 api_version_major = 2;
+  uint32 api_version_minor = 3;
+}
+
+message HelloResponse {
+  uint32 api_version_major = 1;
+  uint32 api_version_minor = 2;
+  string server_info = 3 [(nanopb).max_length = 64];
+  string name = 4 [(nanopb).max_length = 64];
+}
+
+message DisconnectRequest {
+}
+
+message DisconnectResponse {
+}
+
+message PingRequest {
+}
+
+message PingResponse {
+}
+
+message DeviceInfoRequest {
+}
+
+message DeviceInfoResponse {
+  bool uses_password = 1;
+  string name = 2 [(nanopb).max_length = 64];
+  string mac_address = 3 [(nanopb).max_length = 17];
+  string esphome_version = 4 [(nanopb).max_length = 32];
+  string model = 6 [(nanopb).max_length = 64];
+  uint32 voice_assistant_feature_flags = 17;
+}
+
+message ListEntitiesRequest {
+}
+
+message ListEntitiesDoneResponse {
+}
+
+message SubscribeStatesRequest {
+}
+
+message SubscribeVoiceAssistantRequest {
+  bool subscribe = 1;
+  uint32 flags = 2;
+}
+
+message VoiceAssistantAudioSettings {
+  uint32 noise_suppression_level = 1;
+  uint32 auto_gain = 2;
+  float volume_multiplier = 3;
+}
+
+message VoiceAssistantRequest {
+  bool start = 1;
+  string conversation_id = 2 [(nanopb).max_length = 64];
+  uint32 flags = 3;
+  VoiceAssistantAudioSettings audio_settings = 4;
+  string wake_word_phrase = 5 [(nanopb).max_length = 64];
+}
+
+message VoiceAssistantResponse {
+  uint32 port = 1;
+  bool error = 2;
+}
+
+enum VoiceAssistantEvent {
+  VOICE_ASSISTANT_ERROR = 0;
+  VOICE_ASSISTANT_RUN_START = 1;
+  VOICE_ASSISTANT_RUN_END = 2;
+  VOICE_ASSISTANT_STT_START = 3;
+  VOICE_ASSISTANT_STT_END = 4;
+  VOICE_ASSISTANT_INTENT_START = 5;
+  VOICE_ASSISTANT_INTENT_END = 6;
+  VOICE_ASSISTANT_TTS_START = 7;
+  VOICE_ASSISTANT_TTS_END = 8;
+  VOICE_ASSISTANT_WAKE_WORD_START = 9;
+  VOICE_ASSISTANT_WAKE_WORD_END = 10;
+  VOICE_ASSISTANT_STT_VAD_START = 11;
+  VOICE_ASSISTANT_STT_VAD_END = 12;
+  VOICE_ASSISTANT_TTS_STREAM_START = 98;
+  VOICE_ASSISTANT_TTS_STREAM_END = 99;
+  VOICE_ASSISTANT_INTENT_PROGRESS = 100;
+}
+
+message VoiceAssistantEventData {
+  string name = 1 [(nanopb).max_length = 32];
+  // Values carry the LLM reply and the transcript, which can be thousands of
+  // bytes. This is a callback field so the firmware can copy a bounded prefix
+  // and discard the rest without failing to decode the event (a fixed
+  // max_length would make nanopb reject the whole message).
+  string value = 2 [(nanopb).type = FT_CALLBACK];
+}
+
+message VoiceAssistantEventResponse {
+  VoiceAssistantEvent event_type = 1;
+  repeated VoiceAssistantEventData data = 2 [(nanopb).max_count = 4];
+}
+
+message VoiceAssistantAudio {
+  bytes data = 1 [(nanopb).max_size = 2048];
+  bool end = 2;
+}

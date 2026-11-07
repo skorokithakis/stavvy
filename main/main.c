@@ -5,9 +5,13 @@
 #include "esp_netif.h"
 #include "esp_system.h"
 #include "nvs_flash.h"
+#include "sdkconfig.h"
 
+#include "audio.h"
+#include "audio_self_test.h"
 #include "board_i2c.h"
 #include "board_power.h"
+#include "esphome_api.h"
 #include "mdns_service.h"
 #include "wifi_station.h"
 
@@ -36,6 +40,9 @@ void app_main(void)
 
     board_i2c_init();
     board_power_init();
+    // Audio goes after the PMIC so the codecs have their 3.3 V rails, and it
+    // uses the same I2C bus as the PMIC.
+    audio_init();
 
     // The default event loop has to exist before a handler can subscribe to it,
     // and the network stack has to be up before Wi-Fi starts.
@@ -48,4 +55,11 @@ void app_main(void)
 
     wifi_station_connect();
     mdns_service_start();
+    // lwIP is up as soon as esp_netif is, so the listener can exist before
+    // Wi-Fi associates; nothing arrives until the interface has an address.
+    esphome_api_start();
+
+#if CONFIG_AUDIO_SELF_TEST
+    audio_self_test_start();
+#endif
 }

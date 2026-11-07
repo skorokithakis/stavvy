@@ -14,3 +14,16 @@ menu "Wi-Fi configuration"
             Leave empty for an open network.
 
 endmenu
+
+menu "Audio"
+
+    config AUDIO_SELF_TEST
+        bool "Run the audio hardware self-test at boot"
+        default n
+        help
+            Plays a one-second 440 Hz tone and then logs the microphone level
+            for four seconds. Useful when checking a new board's audio path.
+            The test runs in its own task so it does not delay network startup,
+            but it does make sound on every boot, so leave this off normally.
+
+endmenu

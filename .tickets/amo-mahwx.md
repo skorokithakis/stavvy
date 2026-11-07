@@ -1,6 +1,6 @@
 ---
 id: amo-mahwx
-status: open
+status: closed
 deps: [amo-pmgdr]
 links: []
 created: 2026-11-06T23:13:23Z

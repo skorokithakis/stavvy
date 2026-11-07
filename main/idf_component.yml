@@ -1,5 +1,8 @@
 dependencies:
   idf: ">=5.5"
+  # The ES8311 and ES7210 drivers, the I2S data interface and the shared
+  # esp_codec_dev wrapper all come from this component.
+  espressif/esp_codec_dev: "~1.5.6"
   # mDNS is no longer part of ESP-IDF as of v5.5, so it comes from the
   # component registry instead.
   espressif/mdns: "^1.15"

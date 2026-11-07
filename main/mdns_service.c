@@ -13,7 +13,7 @@ static const char *TAG = "mdns_service";
 #define ESPHOME_API_PROTOCOL "_tcp"
 #define ESPHOME_API_PORT 6053
 
-static void format_hostname(char *hostname, size_t hostname_size)
+void mdns_service_get_hostname(char *hostname, size_t hostname_size)
 {
     uint8_t mac_address[6];
     ESP_ERROR_CHECK(esp_read_mac(mac_address, ESP_MAC_WIFI_STA));
@@ -26,7 +26,7 @@ static void format_hostname(char *hostname, size_t hostname_size)
 void mdns_service_start(void)
 {
     char hostname[32];
-    format_hostname(hostname, sizeof(hostname));
+    mdns_service_get_hostname(hostname, sizeof(hostname));
 
     ESP_ERROR_CHECK(mdns_init());
     ESP_ERROR_CHECK(mdns_hostname_set(hostname));

@@ -1,4 +1,14 @@
 dependencies:
+  espressif/esp_codec_dev:
+    component_hash: df70f10af8d7b922add7b9d07372c9c97ab356e58d72b7a892050227c2d44348
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.5.11
   espressif/mdns:
     component_hash: 2fa43caa78cc170842255bc7bf71f306bc815cae12e9496bfb12372423019ac7
     dependencies:
@@ -14,8 +24,9 @@ dependencies:
       type: idf
     version: 5.5.3
 direct_dependencies:
+- espressif/esp_codec_dev
 - espressif/mdns
 - idf
-manifest_hash: a6e6be282755c333e4019dcb723e710462872aa0c6ffdc722999c55cba6252af
+manifest_hash: c4cdbb0279452e62973df5f0ce00f7becf722388fb9c8b4848a778899619691d
 target: esp32c6
 version: 2.0.0

@@ -1,16 +1,25 @@
 idf_component_register(
     SRCS
         "main.c"
+        "audio.c"
+        "audio_self_test.c"
         "board_i2c.c"
         "board_power.c"
+        "esphome_api.c"
+        "proto/esphome_api.pb.c"
         "wifi_station.c"
         "mdns_service.c"
-    INCLUDE_DIRS "."
+    INCLUDE_DIRS "." "proto"
     PRIV_REQUIRES
         esp_driver_i2c
+        esp_driver_i2s
         esp_event
         esp_netif
+        esp_timer
         esp_wifi
+        esp_codec_dev
+        lwip
         mdns
+        nanopb
         nvs_flash
 )

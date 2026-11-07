@@ -93,6 +93,18 @@ docker run --rm -it -v "$PWD":/project -w /project -u "$(id -u):$(id -g)" -e HOM
     espressif/idf:v5.5.3 idf.py menuconfig
 ```
 
+## ESPHome native API server
+
+The firmware runs a plaintext ESPHome native API server on TCP port 6053, limited to the messages `havpe-server` uses for its voice pipeline. The wire protocol lives in `main/proto/esphome_api.proto`, a reduced copy of ESPHome's `api.proto` with identical field numbers.
+
+nanopb is used without dynamic allocation. Its runtime is vendored in `components/nanopb` (0.4.9.1, zlib licence). The generated `main/proto/esphome_api.pb.c` and `.pb.h` are committed because the ESP-IDF Docker image has no protobuf toolchain; regenerate them on the host after editing the `.proto`:
+
+```sh
+./main/proto/regenerate.sh
+```
+
+The script creates a virtualenv in `$TMPDIR` and installs `nanopb==0.4.9.1` (which bundles protoc), so `python3` is the only host requirement.
+
 ## Gotchas
 
 - **Console is USB only.** ESP-IDF's default UART0 console uses GPIO16/GPIO17, which are the IMU INT1/INT2 lines here. `sdkconfig.defaults` moves the console to the USB-Serial-JTAG port. An existing `sdkconfig` overrides `sdkconfig.defaults`, so after changing defaults, change `sdkconfig` too or delete it (you then have to set Wi-Fi credentials again).
