@@ -6,3 +6,6 @@ dependencies:
   # mDNS is no longer part of ESP-IDF as of v5.5, so it comes from the
   # component registry instead.
   espressif/mdns: "^1.15"
+  # WakeNet9s from ESP-SR, used without the AFE. Pinned to the 2.3 series
+  # because that is the version Waveshare's XiaoZhi firmware runs on this board.
+  espressif/esp-sr: "~2.3.0"

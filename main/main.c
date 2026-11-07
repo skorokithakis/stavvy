@@ -13,6 +13,7 @@
 #include "board_power.h"
 #include "esphome_api.h"
 #include "mdns_service.h"
+#include "trigger.h"
 #include "wifi_station.h"
 
 static const char *TAG = "main";
@@ -27,6 +28,13 @@ static void handle_network_connected(void *handler_argument, esp_event_base_t ev
                                      void *event_data)
 {
     log_heap_usage("after Wi-Fi connect");
+}
+
+static void handle_trigger(trigger_source_t source)
+{
+    ESP_LOGI(TAG, "Trigger raised by %s (free heap %u bytes, minimum free heap %u bytes)",
+             source == TRIGGER_SOURCE_WAKE_WORD ? "wake word" : "key button",
+             (unsigned)esp_get_free_heap_size(), (unsigned)esp_get_minimum_free_heap_size());
 }
 
 void app_main(void)
@@ -62,4 +70,11 @@ void app_main(void)
 #if CONFIG_AUDIO_SELF_TEST
     audio_self_test_start();
 #endif
+
+    // There is no session layer yet, so the trigger is always enabled and the
+    // callback only logs. The model is loaded after the network is up so the
+    // heap report below reflects the memory WakeNet actually takes from the
+    // firmware's steady state.
+    trigger_init(handle_trigger);
+    trigger_enable();
 }

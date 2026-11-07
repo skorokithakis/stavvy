@@ -27,3 +27,17 @@ menu "Audio"
             but it does make sound on every boot, so leave this off normally.
 
 endmenu
+
+menu "Wake word"
+
+    # ESP-SR's own Kconfig lists only Hi,乐鑫, Hi,ESP, 你好小智 and Hi,Jason in
+    # its WakeNet9s menu, even though the component ships wn9s_alexa. Its model
+    # packer selects models by scanning sdkconfig for CONFIG_SR_WN_<model name>,
+    # so declaring the symbol here is enough to put wn9s_alexa in srmodels.bin
+    # and therefore in the model partition. Keep this the only SR_WN symbol
+    # enabled so the model image stays small.
+    config SR_WN_WN9S_ALEXA
+        bool "Load the Alexa WakeNet9s model (wn9s_alexa)"
+        default y
+
+endmenu

@@ -105,6 +105,25 @@ nanopb is used without dynamic allocation. Its runtime is vendored in `component
 
 The script creates a virtualenv in `$TMPDIR` and installs `nanopb==0.4.9.1` (which bundles protoc), so `python3` is the only host requirement.
 
+## Wake word
+
+The trigger module (`main/trigger.c`) runs Alexa wake word detection with
+WakeNet9s (`wn9s_alexa`) from ESP-SR, without the AFE because the AFE needs PSRAM.
+The model lives in the `model` data partition. ESP-SR's build step packs the
+selected models into `build/srmodels/srmodels.bin` and adds it to the `flash`
+target, so the normal `idf.py flash` writes both the application and the model.
+`build/flash_args` lists the model at the partition's offset.
+
+ESP-SR's Kconfig does not offer `wn9s_alexa` even though the model ships in the
+component. Its packer selects models by scanning `sdkconfig` for
+`CONFIG_SR_WN_<model name>`, so `main/Kconfig.projbuild` declares
+`CONFIG_SR_WN_WN9S_ALEXA` itself. Keep it the only enabled `SR_WN` symbol so the
+model image stays small.
+
+The KEY button is on GPIO10. The schematic shows a 10K pull-up (R18) to 3.3 V
+and the switch to ground, so it reads low when pressed. The 100 nF debounce
+capacitor (C22) is marked not fitted, so the firmware debounces the press.
+
 ## Gotchas
 
 - **Console is USB only.** ESP-IDF's default UART0 console uses GPIO16/GPIO17, which are the IMU INT1/INT2 lines here. `sdkconfig.defaults` moves the console to the USB-Serial-JTAG port. An existing `sdkconfig` overrides `sdkconfig.defaults`, so after changing defaults, change `sdkconfig` too or delete it (you then have to set Wi-Fi credentials again).

@@ -9,8 +9,10 @@ idf_component_register(
         "proto/esphome_api.pb.c"
         "wifi_station.c"
         "mdns_service.c"
+        "trigger.c"
     INCLUDE_DIRS "." "proto"
     PRIV_REQUIRES
+        esp_driver_gpio
         esp_driver_i2c
         esp_driver_i2s
         esp_event
@@ -18,6 +20,7 @@ idf_component_register(
         esp_timer
         esp_wifi
         esp_codec_dev
+        espressif__esp-sr
         lwip
         mdns
         nanopb
