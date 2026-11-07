@@ -65,7 +65,37 @@ Verified against the schematic unless marked otherwise.
 | USB D- / D+ | 12 / 13 |
 | Speaker amplifier enable | Not a GPIO in Waveshare's code (`GPIO_NUM_NC`). Not confirmed how it is enabled. |
 
+## Build and flash
+
+The ESP-IDF toolchain is not installed on the host. Use Espressif's v5.5.3 Docker image and run it as the host user, so `build/` and `sdkconfig` are not left owned by root:
+
+```sh
+docker pull espressif/idf:v5.5.3
+
+docker run --rm -v "$PWD":/project -w /project -u "$(id -u):$(id -g)" -e HOME=/tmp \
+    espressif/idf:v5.5.3 idf.py build
+```
+
+The first build downloads the mDNS component from the ESP component registry, so it needs network access.
+
+Flash and watch the log over the board's USB port. `--group-add dialout` lets the container open the port, and the device may enumerate as something other than `ttyACM0`:
+
+```sh
+docker run --rm -it --device=/dev/ttyACM0 --group-add dialout -v "$PWD":/project -w /project \
+    -u "$(id -u):$(id -g)" -e HOME=/tmp espressif/idf:v5.5.3 \
+    idf.py -p /dev/ttyACM0 flash monitor
+```
+
+Wi-Fi credentials are set at build time. `menuconfig` writes them to the git-ignored `sdkconfig`, so they never enter the repository:
+
+```sh
+docker run --rm -it -v "$PWD":/project -w /project -u "$(id -u):$(id -g)" -e HOME=/tmp \
+    espressif/idf:v5.5.3 idf.py menuconfig
+```
+
 ## Gotchas
+
+- **Console is USB only.** ESP-IDF's default UART0 console uses GPIO16/GPIO17, which are the IMU INT1/INT2 lines here. `sdkconfig.defaults` moves the console to the USB-Serial-JTAG port. An existing `sdkconfig` overrides `sdkconfig.defaults`, so after changing defaults, change `sdkconfig` too or delete it (you then have to set Wi-Fi credentials again).
 
 - **Frame buffer does not fit in RAM.** One 480 × 480 frame at 16 bits per pixel is about 460 KB, nearly all of the 512 KB SRAM. Draw in partial strips (for example, LVGL partial render mode with a buffer of a few tens of lines). Full-screen animation and video will be slow.
 - **Waveshare's ESP-IDF and Arduino examples swap two pins.** Their `user_config.h` sets LCD CS = GPIO5 and touch INT = GPIO15. The schematic and Waveshare's XiaoZhi board config (`main/boards/waveshare/esp32-c6-touch-amoled-2.16/config.h`) use LCD CS = GPIO15 and touch INT = GPIO5. Trust the schematic.

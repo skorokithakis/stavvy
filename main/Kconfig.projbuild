@@ -1,0 +1,16 @@
+menu "Wi-Fi configuration"
+
+    config WIFI_SSID
+        string "Wi-Fi network name (SSID)"
+        default ""
+        help
+            The network the board joins at boot. Keep the default empty until
+            you set it: this value ends up in sdkconfig, which is not committed.
+
+    config WIFI_PASSWORD
+        string "Wi-Fi password"
+        default ""
+        help
+            Leave empty for an open network.
+
+endmenu

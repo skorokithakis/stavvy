@@ -1,0 +1,9 @@
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+
+# The default UART0 console uses GPIO16/GPIO17, which are the IMU interrupt lines on this
+# board. Logging only over the native USB port keeps those pins free.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

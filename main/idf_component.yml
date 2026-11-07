@@ -1,0 +1,5 @@
+dependencies:
+  idf: ">=5.5"
+  # mDNS is no longer part of ESP-IDF as of v5.5, so it comes from the
+  # component registry instead.
+  espressif/mdns: "^1.15"
