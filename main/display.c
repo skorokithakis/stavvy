@@ -12,9 +12,11 @@
 #include "esp_lcd_sh8601.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
+#include "esp_random.h"
 #include "esp_system.h"
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
+#include "faces.h"
 #include "freertos/task.h"
 #include "lvgl.h"
 #include "sdkconfig.h"
@@ -51,7 +53,47 @@ static const char *TAG = "display";
 // The panel is an AMOLED with no backlight pin, so brightness is a command
 // rather than a PWM duty cycle. 60% is readable indoors without burning power
 // or shortening the panel's life like full brightness would.
-#define DISPLAY_BRIGHTNESS_PERCENT 60
+#define DISPLAY_BRIGHTNESS_FULL_PERCENT 60
+// An idle face is mostly there to be glanced at, so a dim panel still shows the
+// expression while using less current. The jump back to 60% is also the
+// clearest "I am listening now" cue the screen has.
+#define DISPLAY_BRIGHTNESS_DIM_PERCENT 25
+// How long an idle or muted screen stays at full brightness before dimming.
+#define DISPLAY_DIM_AFTER_MILLISECONDS (30 * 1000)
+
+// A blink is one short frame every few seconds. 150 ms is long enough to see
+// and short enough that it reads as a blink rather than a second expression.
+#define DISPLAY_BLINK_DURATION_MILLISECONDS 150
+#define DISPLAY_BLINK_MINIMUM_INTERVAL_MILLISECONDS (3 * 1000)
+#define DISPLAY_BLINK_MAXIMUM_INTERVAL_MILLISECONDS (7 * 1000)
+
+// A variety moment is another idle expression held for a few seconds, every
+// few minutes, so the screen does not look frozen without becoming a
+// distraction.
+#define DISPLAY_VARIETY_MINIMUM_INTERVAL_MILLISECONDS (3 * 60 * 1000)
+#define DISPLAY_VARIETY_MAXIMUM_INTERVAL_MILLISECONDS (6 * 60 * 1000)
+#define DISPLAY_VARIETY_MINIMUM_DURATION_MILLISECONDS (3 * 1000)
+#define DISPLAY_VARIETY_MAXIMUM_DURATION_MILLISECONDS (5 * 1000)
+
+// Drift moves the face a few pixels every few minutes, so it is not pinned to
+// the same pixel for hours. 20 px is about 4% of the screen: enough to feel
+// alive, small enough that the face never looks misplaced.
+#define DISPLAY_DRIFT_MINIMUM_INTERVAL_MILLISECONDS (2 * 60 * 1000)
+#define DISPLAY_DRIFT_MAXIMUM_INTERVAL_MILLISECONDS (5 * 60 * 1000)
+#define DISPLAY_DRIFT_MAXIMUM_STEP_PIXELS 4
+#define DISPLAY_DRIFT_MAXIMUM_OFFSET_PIXELS 20
+
+// The text sits below every face even at maximum downward drift. The lowest
+// crop is the muted face, which ends at row 375; 20 px of drift takes it to
+// 395, so the text starts at 396. That leaves 84 px: one transcript line and
+// two reply lines of the 20 px font (line height 22 px). The user found 14 px
+// too small to read; fewer, larger lines are fine because the reply is spoken.
+#define DISPLAY_TEXT_TOP 396
+#define DISPLAY_TEXT_MARGIN 16
+#define DISPLAY_TEXT_WIDTH (DISPLAY_WIDTH - 2 * DISPLAY_TEXT_MARGIN)
+#define DISPLAY_TRANSCRIPT_HEIGHT 24
+#define DISPLAY_REPLY_TOP (DISPLAY_TEXT_TOP + DISPLAY_TRANSCRIPT_HEIGHT + 4)
+#define DISPLAY_REPLY_HEIGHT 48
 
 // QSPI command framing from the CO5300 datasheet: instruction 0x02 writes and
 // 0x03 reads a 24-bit address of the form {0x00, command, 0x00}. The SH8601
@@ -102,39 +144,63 @@ static const sh8601_lcd_init_cmd_t panel_init_commands[] = {
     {0x35, (uint8_t[]){0x00}, 1, 0},
     {0x36, (uint8_t[]){0x30}, 1, 0},
     {0x53, (uint8_t[]){0x20}, 1, 0},
-    {0x51, (uint8_t[]){DISPLAY_BRIGHTNESS_PERCENT * 255 / 100}, 1, 0},
+    {0x51, (uint8_t[]){DISPLAY_BRIGHTNESS_FULL_PERCENT * 255 / 100}, 1, 0},
     {0x63, (uint8_t[]){0xFF}, 1, 0},
     {0x2A, (uint8_t[]){0x00, 0x00, 0x01, 0xDF}, 4, 0},
     {0x2B, (uint8_t[]){0x00, 0x00, 0x01, 0xDF}, 4, 0},
     {0x29, NULL, 0, 100},
 };
 
-static const char *const state_text[] = {
-    [DISPLAY_STATE_IDLE] = "Idle",
-    [DISPLAY_STATE_LISTENING] = "Listening",
-    [DISPLAY_STATE_THINKING] = "Thinking",
-    [DISPLAY_STATE_SPEAKING] = "Speaking",
-    [DISPLAY_STATE_ERROR] = "Error",
-    [DISPLAY_STATE_NO_SERVER] = "No server",
-    [DISPLAY_STATE_MUTED] = "Muted",
+// Only used in logs now: the screen has no state line, but a state change is
+// still the first thing to look for when checking the screen from a log.
+static const char *const state_name[] = {
+    [DISPLAY_STATE_IDLE] = "idle",
+    [DISPLAY_STATE_LISTENING] = "listening",
+    [DISPLAY_STATE_THINKING] = "thinking",
+    [DISPLAY_STATE_SPEAKING] = "speaking",
+    [DISPLAY_STATE_ERROR] = "error",
+    [DISPLAY_STATE_NO_SERVER] = "no server",
+    [DISPLAY_STATE_MUTED] = "muted",
 };
 
-static const lv_color_t state_color[] = {
-    [DISPLAY_STATE_IDLE] = LV_COLOR_MAKE(0xB0, 0xB0, 0xB0),
-    [DISPLAY_STATE_LISTENING] = LV_COLOR_MAKE(0x4C, 0xAF, 0x50),
-    [DISPLAY_STATE_THINKING] = LV_COLOR_MAKE(0xFF, 0xC1, 0x07),
-    [DISPLAY_STATE_SPEAKING] = LV_COLOR_MAKE(0x21, 0x96, 0xF3),
-    [DISPLAY_STATE_ERROR] = LV_COLOR_MAKE(0xF4, 0x43, 0x36),
-    [DISPLAY_STATE_NO_SERVER] = LV_COLOR_MAKE(0xFF, 0x98, 0x00),
-    // A deeper red than the error line, so "muted" and "error" are told apart
-    // at a glance even though both are red.
-    [DISPLAY_STATE_MUTED] = LV_COLOR_MAKE(0xD3, 0x2F, 0x2F),
+// The face each state shows when no blink or variety moment is on screen.
+// Error and no server keep the idle face and carry their message in the text
+// area instead.
+static const face_id_t state_face[] = {
+    [DISPLAY_STATE_IDLE] = FACE_IDLE_DEFAULT,
+    [DISPLAY_STATE_LISTENING] = FACE_LISTENING,
+    [DISPLAY_STATE_THINKING] = FACE_THINKING,
+    [DISPLAY_STATE_SPEAKING] = FACE_SPEAKING,
+    [DISPLAY_STATE_ERROR] = FACE_IDLE_DEFAULT,
+    [DISPLAY_STATE_NO_SERVER] = FACE_IDLE_DEFAULT,
+    [DISPLAY_STATE_MUTED] = FACE_MUTED,
 };
 
-static lv_obj_t *state_label;
+static lv_obj_t *face_image;
 static lv_obj_t *transcript_label;
 static lv_obj_t *reply_label;
-static lv_obj_t *reply_container;
+
+// Everything that changes on its own runs on LVGL's timers, in the LVGL task.
+// The session task therefore only ever changes the state; it does not have to
+// start, stop or tick any of these.
+static lv_timer_t *blink_timer;
+static lv_timer_t *variety_timer;
+static lv_timer_t *drift_timer;
+static lv_timer_t *dim_timer;
+
+static display_state_t current_state = DISPLAY_STATE_IDLE;
+// The face on screen now, so a drift step can move it without looking it up
+// from the state again (the state may be showing a blink or variety face).
+static const face_asset_t *current_asset;
+static int16_t drift_x;
+static int16_t drift_y;
+// Blink and variety are two-phase: one timer fire shows the temporary face and
+// schedules the return, the next fire restores the state's face.
+static bool blink_showing;
+static bool variety_showing;
+// What the panel was last told. Kept so a touch recovery, which resends the
+// init list and its full-brightness command, can restore a dimmed panel.
+static uint8_t brightness_percent = DISPLAY_BRIGHTNESS_FULL_PERCENT;
 
 // Kept so the boot power-mode read and the brightness write can use the same
 // io after panel creation.
@@ -231,11 +297,33 @@ static esp_err_t read_panel_power_mode(uint8_t *power_mode)
     return esp_lcd_panel_io_rx_param(display_io, command, power_mode, sizeof(*power_mode));
 }
 
-static esp_err_t set_panel_brightness(void)
+static esp_err_t write_panel_brightness(uint8_t percent)
 {
-    const uint8_t brightness = DISPLAY_BRIGHTNESS_PERCENT * 255 / 100;
+    const uint8_t brightness = percent * 255 / 100;
     const int command = (DISPLAY_QSPI_WRITE_COMMAND_OPCODE << 24) | (LCD_CMD_WRDISBV << 8);
     return esp_lcd_panel_io_tx_param(display_io, command, &brightness, sizeof(brightness));
+}
+
+// Always writes the command, so the recovery path can use it to restore the
+// dim value after re-sending the init list (which sets full brightness).
+static void apply_brightness(uint8_t percent)
+{
+    const esp_err_t result = write_panel_brightness(percent);
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "Setting the panel brightness to %d%% failed (0x%x)", percent, result);
+        return;
+    }
+    brightness_percent = percent;
+}
+
+// Skips a panel write when the value is already in effect, so the three state
+// changes in a session do not each send a redundant command.
+static void set_brightness(uint8_t percent)
+{
+    if (percent == brightness_percent) {
+        return;
+    }
+    apply_brightness(percent);
 }
 
 void display_request_recovery(void)
@@ -258,10 +346,9 @@ static void recover_panel(void)
         ESP_LOGE(TAG, "Re-initialising the panel failed (0x%x)", init_result);
         return;
     }
-    const esp_err_t brightness_result = set_panel_brightness();
-    if (brightness_result != ESP_OK) {
-        ESP_LOGE(TAG, "Restoring the panel brightness failed (0x%x)", brightness_result);
-    }
+    // The init list resends the brightness command at full brightness, so a
+    // dimmed idle screen would come back bright. Restore the value in effect.
+    apply_brightness(brightness_percent);
 
     lv_obj_invalidate(lv_screen_active());
     ESP_LOGI(TAG, "Touch recovery: panel re-initialised at %lu s, screen invalidated",
@@ -294,59 +381,241 @@ static void reset_lvgl_watchdog(lv_timer_t *timer)
     esp_task_wdt_reset();
 }
 
-static void create_status_screen(void)
+static uint32_t random_between(uint32_t minimum, uint32_t maximum)
+{
+    // esp_random() is the hardware RNG; the modulo bias over ranges of a few
+    // seconds or pixels is irrelevant here.
+    return minimum + esp_random() % (maximum - minimum + 1);
+}
+
+static int16_t clamp_drift(int16_t offset)
+{
+    if (offset > DISPLAY_DRIFT_MAXIMUM_OFFSET_PIXELS) {
+        return DISPLAY_DRIFT_MAXIMUM_OFFSET_PIXELS;
+    }
+    if (offset < -DISPLAY_DRIFT_MAXIMUM_OFFSET_PIXELS) {
+        return -DISPLAY_DRIFT_MAXIMUM_OFFSET_PIXELS;
+    }
+    return offset;
+}
+
+// Draws one face at its home position plus the current drift. Changing the
+// source and moving the object invalidates only the image area, so neither a
+// blink nor a drift step repaints the text or the rest of the screen.
+static void show_face(face_id_t face)
+{
+    current_asset = faces_get(face);
+    lv_image_set_src(face_image, current_asset->image);
+    lv_obj_set_pos(face_image, current_asset->x + drift_x, current_asset->y + drift_y);
+    // The object is sized from its content, and the new source's dimensions
+    // only apply after a layout pass. Doing it here makes the object and the
+    // log agree within the same timer call.
+    lv_obj_update_layout(face_image);
+}
+
+// Puts the idle or muted screen on the 30 second dim countdown. A session
+// pauses the timer instead, and error and no-server screens keep full
+// brightness for their message, so when this timer fires the state is known to
+// be one of these two.
+static void restart_dim_timer(void)
+{
+    lv_timer_set_period(dim_timer, DISPLAY_DIM_AFTER_MILLISECONDS);
+    lv_timer_reset(dim_timer);
+    lv_timer_resume(dim_timer);
+}
+
+static void dim_timer_callback(lv_timer_t *timer)
+{
+    (void)timer;
+    ESP_LOGI(TAG, "Idle for %d s, dimming the display to %d%%",
+             DISPLAY_DIM_AFTER_MILLISECONDS / 1000, DISPLAY_BRIGHTNESS_DIM_PERCENT);
+    set_brightness(DISPLAY_BRIGHTNESS_DIM_PERCENT);
+    lv_timer_pause(timer);
+}
+
+// Restarts the blink and variety cycles from a fresh random interval. Called on
+// every state change so a session does not inherit a blink that was already
+// due, and so an idle screen starts counting again when it comes back.
+static void reset_expression_timers(void)
+{
+    blink_showing = false;
+    variety_showing = false;
+    lv_timer_set_period(blink_timer, random_between(DISPLAY_BLINK_MINIMUM_INTERVAL_MILLISECONDS,
+                                                    DISPLAY_BLINK_MAXIMUM_INTERVAL_MILLISECONDS));
+    lv_timer_reset(blink_timer);
+    lv_timer_set_period(variety_timer, random_between(DISPLAY_VARIETY_MINIMUM_INTERVAL_MILLISECONDS,
+                                                      DISPLAY_VARIETY_MAXIMUM_INTERVAL_MILLISECONDS));
+    lv_timer_reset(variety_timer);
+}
+
+static void blink_timer_callback(lv_timer_t *timer)
+{
+    // Blinking belongs to the idle face only. A session, the muted face, an
+    // error or a variety moment each have their own expression, and a blink
+    // there would fight it. The timer still reschedules itself so the first
+    // blink after the next return to idle comes at a random interval.
+    if (current_state != DISPLAY_STATE_IDLE || variety_showing) {
+        blink_showing = false;
+        lv_timer_set_period(timer, random_between(DISPLAY_BLINK_MINIMUM_INTERVAL_MILLISECONDS,
+                                                  DISPLAY_BLINK_MAXIMUM_INTERVAL_MILLISECONDS));
+        return;
+    }
+
+    if (blink_showing) {
+        blink_showing = false;
+        show_face(FACE_IDLE_DEFAULT);
+        lv_timer_set_period(timer, random_between(DISPLAY_BLINK_MINIMUM_INTERVAL_MILLISECONDS,
+                                                  DISPLAY_BLINK_MAXIMUM_INTERVAL_MILLISECONDS));
+        return;
+    }
+
+    blink_showing = true;
+    show_face(FACE_BLINK);
+    // The next fire is the return to the idle face, which is why the duration
+    // is the period rather than a separate one-shot timer.
+    lv_timer_set_period(timer, DISPLAY_BLINK_DURATION_MILLISECONDS);
+    ESP_LOGI(TAG, "Blink");
+}
+
+static void variety_timer_callback(lv_timer_t *timer)
+{
+    const uint32_t waiting_period =
+        random_between(DISPLAY_VARIETY_MINIMUM_INTERVAL_MILLISECONDS, DISPLAY_VARIETY_MAXIMUM_INTERVAL_MILLISECONDS);
+
+    // Only the idle face has spare expressions. In every other state the timer
+    // keeps counting down so the next idle period still starts with a fresh
+    // interval.
+    if (current_state != DISPLAY_STATE_IDLE) {
+        variety_showing = false;
+        lv_timer_set_period(timer, waiting_period);
+        return;
+    }
+
+    if (variety_showing) {
+        variety_showing = false;
+        show_face(FACE_IDLE_DEFAULT);
+        lv_timer_set_period(timer, waiting_period);
+        ESP_LOGI(TAG, "Variety: back to the idle face");
+        return;
+    }
+
+    const face_id_t face = (esp_random() & 1) ? FACE_IDLE_CURIOUS : FACE_IDLE_HAPPY_EYES;
+    variety_showing = true;
+    show_face(face);
+    lv_timer_set_period(timer, random_between(DISPLAY_VARIETY_MINIMUM_DURATION_MILLISECONDS,
+                                              DISPLAY_VARIETY_MAXIMUM_DURATION_MILLISECONDS));
+    ESP_LOGI(TAG, "Variety: showing the %s face", face == FACE_IDLE_CURIOUS ? "curious" : "happy eyes");
+}
+
+static void drift_timer_callback(lv_timer_t *timer)
+{
+    // A small step in a random direction each way, clamped to the ±20 px box.
+    // Steps rather than a new random offset keep the movement from jumping
+    // across the whole box in one go.
+    const int16_t step_x = (int16_t)(random_between(0, 2 * DISPLAY_DRIFT_MAXIMUM_STEP_PIXELS)) -
+                           DISPLAY_DRIFT_MAXIMUM_STEP_PIXELS;
+    const int16_t step_y = (int16_t)(random_between(0, 2 * DISPLAY_DRIFT_MAXIMUM_STEP_PIXELS)) -
+                           DISPLAY_DRIFT_MAXIMUM_STEP_PIXELS;
+    drift_x = clamp_drift((int16_t)(drift_x + step_x));
+    drift_y = clamp_drift((int16_t)(drift_y + step_y));
+
+    lv_obj_set_pos(face_image, current_asset->x + drift_x, current_asset->y + drift_y);
+    ESP_LOGI(TAG, "Drift: (%d, %d) px from home", drift_x, drift_y);
+
+    lv_timer_set_period(timer, random_between(DISPLAY_DRIFT_MINIMUM_INTERVAL_MILLISECONDS,
+                                              DISPLAY_DRIFT_MAXIMUM_INTERVAL_MILLISECONDS));
+}
+
+// The transcript and reply stay up for a moment after the session returns to
+// idle, so the end of the reply is still readable, then they clear: the user
+// wants a bare face between sessions. Error and "No server" messages are not
+// cleared, because they are the only explanation for the state.
+#define DISPLAY_TEXT_CLEAR_AFTER_MILLISECONDS 2500
+
+static lv_timer_t *text_clear_timer;
+
+static void text_clear_timer_callback(lv_timer_t *timer)
+{
+    lv_timer_pause(timer);
+    lv_label_set_text(transcript_label, "");
+    lv_label_set_text(reply_label, "");
+}
+
+// The state line is gone, but an error or a missing server still has to say
+// something. The session sets the reply text before returning to error on most
+// failures, so only an empty reply gets the generic word; "No server" always
+// wins because the session clears both fields before setting that state.
+static void show_state_message(display_state_t state)
+{
+    if (state == DISPLAY_STATE_NO_SERVER) {
+        lv_label_set_text(reply_label, "No server");
+    } else if (state == DISPLAY_STATE_ERROR && lv_label_get_text(reply_label)[0] == '\0') {
+        lv_label_set_text(reply_label, "Error");
+    }
+}
+
+// The text starts below every face at maximum drift, which depends on the
+// asset crops rather than on the drawing code, so check the assumption once at
+// boot instead of trusting the constants to keep matching future images.
+static void log_face_layout(void)
+{
+    int32_t lowest_row = 0;
+    for (int index = 0; index < FACE_COUNT; index++) {
+        const face_asset_t *asset = faces_get((face_id_t)index);
+        const int32_t row = asset->y + asset->image->header.h - 1;
+        if (row > lowest_row) {
+            lowest_row = row;
+        }
+    }
+    const int32_t drifted_row = lowest_row + DISPLAY_DRIFT_MAXIMUM_OFFSET_PIXELS;
+    if (drifted_row >= DISPLAY_TEXT_TOP) {
+        ESP_LOGE(TAG, "A face reaches row %d at maximum drift, overlapping the text at row %d", (int)drifted_row,
+                 DISPLAY_TEXT_TOP);
+    }
+    ESP_LOGI(TAG, "Face area: lowest crop row %d, row %d at maximum drift; text starts at row %d",
+             (int)lowest_row, (int)drifted_row, DISPLAY_TEXT_TOP);
+}
+
+static void create_face_screen(void)
 {
     lv_obj_t *screen = lv_screen_active();
 
     // AMOLED pixels that are black are switched off, so a black background is
     // also the lowest-power option for a screen that is idle most of the time.
     lv_obj_set_style_bg_color(screen, lv_color_black(), 0);
-    lv_obj_set_style_text_color(screen, lv_color_hex(0xE0E0E0), 0);
     // The screen holds one fixed layout, so it should never scroll; keeping it
-    // still also stops a stray swipe from moving the state line later.
+    // still also stops a stray swipe from moving the face or the text.
     lv_obj_set_scrollbar_mode(screen, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_scroll_dir(screen, LV_DIR_NONE);
 
-    state_label = lv_label_create(screen);
-    lv_obj_set_style_text_font(state_label, &lv_font_montserrat_16, 0);
-    lv_obj_set_pos(state_label, 16, 16);
+    // One image object for the face. Swapping its source or moving it
+    // invalidates only the image, which is what keeps blinks and drift steps
+    // from repainting the screen.
+    face_image = lv_image_create(screen);
 
     // The transcript is the user's last utterance and is usually a sentence or
-    // two. Three lines at 16 px is enough; DOT mode makes an exceptionally long
-    // one end in an ellipsis instead of pushing the reply off the screen.
+    // two. Dots mode cuts an exceptionally long one with an ellipsis instead of
+    // pushing the reply down.
     transcript_label = lv_label_create(screen);
-    lv_obj_set_style_text_font(transcript_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(transcript_label, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(transcript_label, lv_color_hex(0x9E9E9E), 0);
-    lv_obj_set_pos(transcript_label, 16, 44);
-    lv_obj_set_size(transcript_label, DISPLAY_WIDTH - 32, 66);
+    lv_obj_set_pos(transcript_label, DISPLAY_TEXT_MARGIN, DISPLAY_TEXT_TOP);
+    lv_obj_set_size(transcript_label, DISPLAY_TEXT_WIDTH, DISPLAY_TRANSCRIPT_HEIGHT);
     lv_label_set_long_mode(transcript_label, LV_LABEL_LONG_MODE_DOTS);
     lv_label_set_text(transcript_label, "");
 
-    // A reply can be a full paragraph, so it gets its own scrollable panel and
-    // a 14 px font. If it still does not fit, the panel scrolls instead of
-    // clipping the end. The pad leaves room for the scrollbar over the text.
-    reply_container = lv_obj_create(screen);
-    lv_obj_set_pos(reply_container, 16, 118);
-    lv_obj_set_size(reply_container, DISPLAY_WIDTH - 32, DISPLAY_HEIGHT - 134);
-    lv_obj_set_style_bg_opa(reply_container, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(reply_container, 0, 0);
-    lv_obj_set_style_radius(reply_container, 0, 0);
-    lv_obj_set_style_shadow_width(reply_container, 0, 0);
-    lv_obj_set_style_outline_width(reply_container, 0, 0);
-    lv_obj_set_style_pad_all(reply_container, 0, 0);
-    lv_obj_set_style_pad_right(reply_container, 10, 0);
-    lv_obj_set_scroll_dir(reply_container, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(reply_container, LV_SCROLLBAR_MODE_AUTO);
-
-    reply_label = lv_label_create(reply_container);
-    lv_obj_set_style_text_font(reply_label, &lv_font_montserrat_14, 0);
+    // A reply can be a full paragraph, but only three lines fit below the face;
+    // dots mode shows that there is more without letting the text run into the
+    // face or off the panel.
+    reply_label = lv_label_create(screen);
+    lv_obj_set_style_text_font(reply_label, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(reply_label, lv_color_hex(0xE0E0E0), 0);
-    lv_obj_set_width(reply_label, LV_PCT(100));
-    lv_label_set_long_mode(reply_label, LV_LABEL_LONG_MODE_WRAP);
+    lv_obj_set_pos(reply_label, DISPLAY_TEXT_MARGIN, DISPLAY_REPLY_TOP);
+    lv_obj_set_size(reply_label, DISPLAY_TEXT_WIDTH, DISPLAY_REPLY_HEIGHT);
+    lv_label_set_long_mode(reply_label, LV_LABEL_LONG_MODE_DOTS);
     lv_label_set_text(reply_label, "");
 
-    lv_label_set_text(state_label, state_text[DISPLAY_STATE_IDLE]);
-    lv_obj_set_style_text_color(state_label, state_color[DISPLAY_STATE_IDLE], 0);
+    show_face(state_face[current_state]);
 }
 
 void display_init(void)
@@ -358,7 +627,7 @@ void display_init(void)
     // The init list already writes brightness, but sending it here from the
     // configured percentage keeps the value in one place that any recovery
     // path can reuse, at the cost of one extra command at boot.
-    ESP_ERROR_CHECK(set_panel_brightness());
+    apply_brightness(DISPLAY_BRIGHTNESS_FULL_PERCENT);
 
     // The read returns 0xFF on this panel, which is the idle level of SIO0
     // rather than a power-mode value. It is logged and kept for the heartbeat
@@ -412,9 +681,27 @@ void display_init(void)
 
     // LVGL objects may only be created while the port's lock is held.
     lvgl_port_lock(0);
-    create_status_screen();
+    create_face_screen();
     lv_timer_create(handle_recovery_request, DISPLAY_RECOVERY_TIMER_PERIOD_MS, NULL);
     lv_timer_create(reset_lvgl_watchdog, DISPLAY_LVGL_WATCHDOG_RESET_MS, NULL);
+    blink_timer = lv_timer_create(blink_timer_callback,
+                                  random_between(DISPLAY_BLINK_MINIMUM_INTERVAL_MILLISECONDS,
+                                                 DISPLAY_BLINK_MAXIMUM_INTERVAL_MILLISECONDS),
+                                  NULL);
+    variety_timer = lv_timer_create(variety_timer_callback,
+                                    random_between(DISPLAY_VARIETY_MINIMUM_INTERVAL_MILLISECONDS,
+                                                   DISPLAY_VARIETY_MAXIMUM_INTERVAL_MILLISECONDS),
+                                    NULL);
+    drift_timer = lv_timer_create(drift_timer_callback,
+                                  random_between(DISPLAY_DRIFT_MINIMUM_INTERVAL_MILLISECONDS,
+                                                 DISPLAY_DRIFT_MAXIMUM_INTERVAL_MILLISECONDS),
+                                  NULL);
+    dim_timer = lv_timer_create(dim_timer_callback, DISPLAY_DIM_AFTER_MILLISECONDS, NULL);
+    text_clear_timer = lv_timer_create(text_clear_timer_callback, DISPLAY_TEXT_CLEAR_AFTER_MILLISECONDS, NULL);
+    lv_timer_pause(text_clear_timer);
+    // The board boots into the idle screen, so its dim countdown starts now.
+    restart_dim_timer();
+    log_face_layout();
     lv_mem_monitor_t lvgl_memory;
     lv_mem_monitor(&lvgl_memory);
     lvgl_port_unlock();
@@ -427,8 +714,7 @@ void display_init(void)
     ESP_ERROR_CHECK(esp_task_wdt_add(lvgl_task));
 
     ESP_LOGI(TAG, "CO5300 panel ready, %d x %d, brightness %d%%, LVGL heap %d KB",
-             DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_BRIGHTNESS_PERCENT,
-             CONFIG_LV_MEM_SIZE_KILOBYTES);
+             DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_BRIGHTNESS_FULL_PERCENT, CONFIG_LV_MEM_SIZE_KILOBYTES);
     ESP_LOGI(TAG, "LVGL heap after creating the screen: %u of %u bytes used, %u bytes free",
              (unsigned)(lvgl_memory.total_size - lvgl_memory.free_size),
              (unsigned)lvgl_memory.total_size, (unsigned)lvgl_memory.free_size);
@@ -445,8 +731,42 @@ int display_last_power_mode(void)
 void display_set_state(display_state_t state)
 {
     lvgl_port_lock(0);
-    lv_label_set_text(state_label, state_text[state]);
-    lv_obj_set_style_text_color(state_label, state_color[state], 0);
+
+    // Repeating the current state is normal during a session (two events may
+    // both report "thinking"), and restarting the blink, variety and dim
+    // cycles for it would keep them from ever firing.
+    if (state != current_state) {
+        ESP_LOGI(TAG, "Display state: %s -> %s", state_name[current_state], state_name[state]);
+        current_state = state;
+
+        // Every state starts at full brightness so a session or a message is
+        // readable. Only the idle and muted screens then run the dim countdown;
+        // the others pause it, so an idle screen cannot dim under a session or
+        // an error message.
+        set_brightness(DISPLAY_BRIGHTNESS_FULL_PERCENT);
+        if (state == DISPLAY_STATE_IDLE || state == DISPLAY_STATE_MUTED) {
+            restart_dim_timer();
+        } else {
+            lv_timer_pause(dim_timer);
+        }
+
+        reset_expression_timers();
+        show_face(state_face[state]);
+
+        if (state == DISPLAY_STATE_IDLE || state == DISPLAY_STATE_MUTED) {
+            lv_timer_reset(text_clear_timer);
+            lv_timer_resume(text_clear_timer);
+        } else {
+            lv_timer_pause(text_clear_timer);
+        }
+    }
+
+    // The message is applied even when the state did not change. The session
+    // clears both text fields before reporting "No server", so a second trigger
+    // with no server would otherwise leave the idle face without its message:
+    // the clears happen, then the state comparison above skips the redraw.
+    show_state_message(state);
+
     lvgl_port_unlock();
 }
 
@@ -461,9 +781,6 @@ void display_set_reply(const char *text)
 {
     lvgl_port_lock(0);
     lv_label_set_text(reply_label, text);
-    // New replies are read from the start; if the previous one was scrolled to
-    // the end, leaving the offset there would show the middle of the new text.
-    lv_obj_scroll_to_y(reply_container, 0, LV_ANIM_OFF);
     lvgl_port_unlock();
 }
 

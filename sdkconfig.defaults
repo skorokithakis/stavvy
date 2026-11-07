@@ -22,7 +22,7 @@ CONFIG_LV_MEM_SIZE_KILOBYTES=16
 # state and transcript, 14 for the reply. 14 is LVGL's default; listing both
 # keeps the choice explicit and the other sizes out of flash.
 CONFIG_LV_FONT_MONTSERRAT_14=y
-CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_20=y
 
 # A hung task must print a backtrace and reboot instead of leaving the board
 # with a dead display or a session that never returns. 30 seconds is above the

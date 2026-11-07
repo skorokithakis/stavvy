@@ -114,6 +114,13 @@ selected models into `build/srmodels/srmodels.bin` and adds it to the `flash`
 target, so the normal `idf.py flash` writes both the application and the model.
 `build/flash_args` lists the model at the partition's offset.
 
+The `model` partition is 2 MB rather than Espressif's suggested 6 MB. ESP-SR
+maps the whole partition into the CPU's 8 MB flash window at boot, and that
+window also holds the application's mapped code and rodata. Once the face
+images pushed the application past about 2 MB of mapped segments, a 6 MB
+partition no longer fit and `srmodel_mmap_init()` aborted at boot. The packed
+Alexa model is about 291 KB, so 2 MB leaves room for more models.
+
 ESP-SR's Kconfig does not offer `wn9s_alexa` even though the model ships in the
 component. Its packer selects models by scanning `sdkconfig` for
 `CONFIG_SR_WN_<model name>`, so `main/Kconfig.projbuild` declares
@@ -127,6 +134,67 @@ toggles the microphone mute; it is polled by its own task in `trigger.c` rather
 than by the detection loop, because it has to work while the microphone is
 muted and while a session owns the capture device.
 
+## Face images
+
+The eight face images are committed as `assets/faces/*.png`, copied from the
+user's `assistant_faces_alpha_480/` folder, which is git-ignored. The firmware
+does not decode PNG: it draws LVGL RGB565A8 data straight from flash, so the
+PNGs are converted ahead of time into `main/faces/*.bin` by
+
+```sh
+./assets/faces/generate_faces.py
+```
+
+The script needs only `uv`; PEP 723 metadata installs Pillow. It crops each
+face to its visible pixels (alpha at least 8 of 255) plus a 6 px glow margin,
+writes the RGB565 plane followed by the A8 plane, and regenerates
+`main/faces_generated.h` and `main/faces_generated.c`. Those generated files
+are committed. The crop is rounded to even coordinates because LVGL's RGB565A8
+drawing assumes the alpha plane's stride is half the RGB565 plane's stride,
+which only holds for an even width. The RGB565 values are in host
+(little-endian) order; `display.c` swaps bytes only when it flushes the draw
+buffer, so pre-swapping the files would turn the colours around.
+
+`main/faces.h` defines `face_id_t`, and `faces_get()` returns the image
+descriptor plus the crop's `x` and `y` in the 480x480 frame. The `.bin` files
+are in `EMBED_FILES`, so they are const in flash and drawing one allocates
+nothing beyond LVGL's existing draw buffer. Adding a face means adding the PNG,
+its name in the script and a `face_id_t` value; the generated table uses the
+enumerator derived from the name, so a mismatch fails to compile.
+
+## Face screen
+
+`main/display.c` draws one face image on a black background and keeps the
+transcript (one line) and reply (two lines) in the bottom 84 px, in Montserrat 20. The state word line is gone: idle
+shows `idle_default`, listening/thinking/speaking show their faces at full
+brightness, muted shows the muted face, and error and no server show the idle
+face with the message in the reply line. The text starts at row 396 because the
+lowest crop (muted) reaches row 375 and drift can add 20 px; a boot-time check
+logs an error if a future crop breaks that.
+
+Everything that changes on its own is an LVGL timer in the LVGL task, so there
+is no extra task:
+
+- Blink: `blink` for 150 ms every 3 to 7 seconds, idle only.
+- Variety: `idle_happy_eyes` or `idle_curious` for 3 to 5 seconds every 3 to 6
+  minutes, idle only.
+- Drift: a step of up to 4 px every 2 to 5 minutes, in every state, clamped to
+  ±20 px from the face's home position.
+- Text clear: 2.5 seconds after the session returns to idle or muted, the
+  transcript and reply clear. Error and no-server messages stay.
+- Dimming: after 30 seconds in idle or muted the panel goes from 60% to 25%.
+  Any state change restores 60% and restarts the countdown, and a session
+  pauses it.
+
+Blink and drift change only the image object's source or position, and the text
+setters only touch their labels, so LVGL invalidates just those areas. The one
+full-screen invalidation is the touch recovery, which also restores the
+brightness in effect (the init list resends 60%).
+
+A state change logs at info, as do drift steps, dimming and the start and end of
+a variety moment. Blinks log at debug, which the default INFO log level
+compiles out.
+
 ## Voice session
 
 `main/voice_session.c` connects the trigger, the API server, the microphone and
@@ -138,9 +206,10 @@ calling them from a callback would stall or deadlock that task.
 States are idle, awaiting response, streaming, thinking and speaking. A trigger
 with no subscribed API client shows "No server" and leaves the trigger enabled.
 Otherwise the trigger is disabled, `VoiceAssistantRequest(start=true)` goes out
-and the screen shows Listening. The client answers with port 0, after which the
-session reads 512 samples (32 ms, 1024 bytes) at a time and sends each as one
-`VoiceAssistantAudio` frame; it handles its own queue between chunks.
+and the screen shows the listening face at full brightness. The client answers
+with port 0, after which the session reads 512 samples (32 ms, 1024 bytes) at a
+time and sends each as one `VoiceAssistantAudio` frame; it handles its own queue
+between chunks.
 `STT_VAD_END`, `ERROR` and `RUN_END` stop the stream. `TTS_END` plays the URL and
 the player completion returns to idle; `RUN_END` alone returns to idle once it
 arrives, unless playback is still running. A client disconnect stops streaming
@@ -149,8 +218,8 @@ after 20 seconds without a stop event; the response and thinking waits have
 their own shorter timeouts so a wedged client cannot keep the trigger disabled.
 
 KEY toggles the microphone mute and does not start a session. Muting disables
-detection and releases the capture device; the idle screen shows a red "Muted"
-line. Unmuting re-enables detection. A press during a session only records the
+detection and releases the capture device; the idle screen shows the muted
+face. Unmuting re-enables detection. A press during a session only records the
 requested state, which `return_to_idle()` applies when the session ends, so the
 reply is never cut off. Mute starts false on every boot and is not stored.
 

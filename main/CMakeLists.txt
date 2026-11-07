@@ -7,6 +7,8 @@ idf_component_register(
         "board_power.c"
         "display.c"
         "esphome_api.c"
+        "faces.c"
+        "faces_generated.c"
         "proto/esphome_api.pb.c"
         "wifi_station.c"
         "mdns_service.c"
@@ -15,6 +17,18 @@ idf_component_register(
         "touch.c"
         "voice_session.c"
     INCLUDE_DIRS "." "proto"
+    # The face images are LVGL RGB565A8 data, which LVGL draws directly from
+    # flash. Embedding them avoids a PNG decoder and the frame-sized buffer
+    # that decoding would need on a chip without PSRAM.
+    EMBED_FILES
+        "faces/idle_default.bin"
+        "faces/listening.bin"
+        "faces/thinking.bin"
+        "faces/speaking.bin"
+        "faces/muted.bin"
+        "faces/blink.bin"
+        "faces/idle_happy_eyes.bin"
+        "faces/idle_curious.bin"
     PRIV_REQUIRES
         esp_driver_gpio
         esp_driver_i2c
