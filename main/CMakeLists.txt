@@ -10,17 +10,20 @@ idf_component_register(
         "wifi_station.c"
         "mdns_service.c"
         "trigger.c"
+        "player.c"
     INCLUDE_DIRS "." "proto"
     PRIV_REQUIRES
         esp_driver_gpio
         esp_driver_i2c
         esp_driver_i2s
         esp_event
+        esp_http_client
         esp_netif
         esp_timer
         esp_wifi
         esp_codec_dev
         espressif__esp-sr
+        espressif__esp_audio_codec
         lwip
         mdns
         nanopb

@@ -1,6 +1,6 @@
 ---
 id: amo-lgdor
-status: open
+status: closed
 deps: [amo-mahwx]
 links: []
 created: 2026-11-06T23:13:23Z

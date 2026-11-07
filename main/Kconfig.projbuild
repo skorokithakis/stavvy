@@ -28,6 +28,20 @@ menu "Audio"
 
 endmenu
 
+menu "Reply player"
+
+    config PLAYER_TEST_URL
+        string "URL to play once after Wi-Fi connects (empty disables the test)"
+        default ""
+        help
+            Fetches and plays this URL once after the board gets an IP address,
+            then does nothing. It is only a hardware check for the HTTP and
+            decode path (for example http://192.168.10.4:8085/tone.wav), because
+            the real session layer decides when a reply is played. Leave it
+            empty in normal builds; the test makes sound on every boot.
+
+endmenu
+
 menu "Wake word"
 
     # ESP-SR's own Kconfig lists only Hi,乐鑫, Hi,ESP, 你好小智 and Hi,Jason in

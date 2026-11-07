@@ -1,5 +1,9 @@
 dependencies:
   idf: ">=5.5"
+  # Simple decoder for the reply player: MP3 and WAV (16-bit PCM) containers.
+  # The Kconfig below limits which decoders and parsers are registered, so the
+  # prebuilt library does not drag in the codecs the firmware never uses.
+  espressif/esp_audio_codec: "^2.6.2"
   # The ES8311 and ES7210 drivers, the I2S data interface and the shared
   # esp_codec_dev wrapper all come from this component.
   espressif/esp_codec_dev: "~1.5.6"
