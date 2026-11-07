@@ -1,12 +1,7 @@
 # Name,   Type, SubType, Offset,   Size,     Flags
 # No OTA: the board is flashed over USB, so the whole app area is one factory
-# partition. ESP-SR loads its wake word models by mapping the partition into
-# the CPU's 8 MB flash window, and that window is shared with the app's own
-# mapped code and rodata. The 8 face images add about 1 MB of rodata, which
-# left 5440 KB of the window and made a 6 MB model partition impossible to
-# map. The packed Alexa model is about 291 KB, so 2 MB keeps plenty of room
-# for more models without claiming window the app could need.
+# partition. The wake word model is embedded in the application image rather
+# than kept in a data partition, so there is nothing to flash alongside it.
 nvs,      data, nvs,     0x9000,   0x6000,
 phy_init, data, phy,     0xf000,   0x1000,
 factory,  app,  factory, 0x10000,  0x400000,
-model,    data, spiffs,  0x410000, 0x200000,

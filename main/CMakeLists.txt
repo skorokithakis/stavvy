@@ -16,6 +16,7 @@ idf_component_register(
         "player.c"
         "touch.c"
         "voice_session.c"
+        "wake_word.cpp"
     INCLUDE_DIRS "." "proto"
     # The face images are LVGL RGB565A8 data, which LVGL draws directly from
     # flash. Embedding them avoids a PNG decoder and the frame-sized buffer
@@ -29,6 +30,9 @@ idf_component_register(
         "faces/blink.bin"
         "faces/idle_happy_eyes.bin"
         "faces/idle_curious.bin"
+        # The microWakeWord model is read in place by TFLite Micro, so it is
+        # mapped from flash and never copied into the tightly constrained heap.
+        "wake_word/stavrobot.tflite"
     PRIV_REQUIRES
         esp_driver_gpio
         esp_driver_i2c
@@ -41,10 +45,11 @@ idf_component_register(
         esp_timer
         esp_wifi
         esp_codec_dev
-        espressif__esp-sr
         espressif__esp_audio_codec
         espressif__esp_lcd_sh8601
         espressif__esp_lvgl_port
+        espressif__esp-tflite-micro
+        esphome__esp-micro-speech-features
         lvgl__lvgl
         lwip
         mdns

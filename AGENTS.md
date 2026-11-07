@@ -107,25 +107,42 @@ The script creates a virtualenv in `$TMPDIR` and installs `nanopb==0.4.9.1` (whi
 
 ## Wake word
 
-The trigger module (`main/trigger.c`) runs Alexa wake word detection with
-WakeNet9s (`wn9s_alexa`) from ESP-SR, without the AFE because the AFE needs PSRAM.
-The model lives in the `model` data partition. ESP-SR's build step packs the
-selected models into `build/srmodels/srmodels.bin` and adds it to the `flash`
-target, so the normal `idf.py flash` writes both the application and the model.
-`build/flash_args` lists the model at the partition's offset.
+The trigger module (`main/trigger.c`) reads 10 ms frames of 16 kHz mono audio and
+hands them to the detector in `main/wake_word.cpp`, which runs the custom
+microWakeWord model "Stavrobot". The model and its microWakeWord manifest are
+`main/wake_word/stavrobot.tflite` and `stavrobot.json`.
 
-The `model` partition is 2 MB rather than Espressif's suggested 6 MB. ESP-SR
-maps the whole partition into the CPU's 8 MB flash window at boot, and that
-window also holds the application's mapped code and rodata. Once the face
-images pushed the application past about 2 MB of mapped segments, a 6 MB
-partition no longer fit and `srmodel_mmap_init()` aborted at boot. The packed
-Alexa model is about 291 KB, so 2 MB leaves room for more models.
+The manifest's four values are copied into constants at the top of
+`wake_word.cpp`: `probability_cutoff` 0.97 (quantised to 247 the way ESPHome does
+it), `sliding_window_size` 5, `feature_step_size` 10 ms and `tensor_arena_size`
+38000. Replacing the model means editing those constants as well.
 
-ESP-SR's Kconfig does not offer `wn9s_alexa` even though the model ships in the
-component. Its packer selects models by scanning `sdkconfig` for
-`CONFIG_SR_WN_<model name>`, so `main/Kconfig.projbuild` declares
-`CONFIG_SR_WN_WN9S_ALEXA` itself. Keep it the only enabled `SR_WN` symbol so the
-model image stays small.
+The spectrogram frontend is `esphome/esp-micro-speech-features` and the inference
+is `espressif/esp-tflite-micro`. esp-nn is pinned to 1.1.2 because 1.2.x gave
+wrong outputs and needed a larger arena; the same versions are what ESPHome's
+`micro_wake_word` uses. The streaming inference, op list, arena handling and
+sliding-window averaging are adapted from that component (GPLv3, like this
+firmware), and `wake_word.cpp` keeps its copyright notice. The model is in
+`EMBED_FILES`, so TFLite Micro reads it straight from flash and a normal
+`idf.py flash` writes it as part of the application; there is no model partition.
+
+The tensor arena is 38 KB and 22.9 KB of it is in use on this chip, so the
+manifest's size is generous here. On boot the detector logs the arena in use, the
+inference period (the model's input stride times the feature step, 20 ms with the
+model as shipped) and the free heap. Every 60 seconds of detection it logs the
+average and maximum inference time, about 3.6 ms and 5.4 ms of that 20 ms period
+on this board, plus the trigger task's stack high-water mark. The trigger reads
+one feature step per call so that this timing is per inference rather than a
+burst inside one read.
+
+The trigger starts detection with a reset, which clears the frontend's window,
+the model's streaming state and the probability history, so the words just before
+a session cannot fire the next one. For the same reason a detection clears the
+probability history, and the model has to hear a second of audio below the cutoff
+before it can fire again, so one utterance cannot trigger repeatedly while
+detection stays enabled. The first 100 ms of audio after capture starts are still
+discarded: the codec and amplifier rails make a transient that would otherwise
+hide or fake a wake word.
 
 The KEY button is on GPIO10. The schematic shows a 10K pull-up (R18) to 3.3 V
 and the switch to ground, so it reads low when pressed. The 100 nF debounce
@@ -239,5 +256,6 @@ board. It is off by default and is ignored while muted.
 - **The AXP2101 must be set up before peripherals work.** The Waveshare examples enable its ALDO rails at boot. The display, microphones and other parts may not have power until then.
 - **Display connector wiring (J4).** `LCD_RESET` is not on a GPIO: it is pulled up to the ALDO3 rail through R16 (10K), so the panel only resets on an ALDO3 power-up or a dip/noise on that line. The schematic's summary table says GPIO10 = `LCD_RESET`; that is wrong (pressing KEY on GPIO10 does not affect the panel). `LCD_TE` goes only to test pad TP20, not to a GPIO. `DSI_PWR_EN` is pulled up to 3.3 V (always on).
 - **Unsolved: the screen sometimes goes black while idle,** a few minutes after boot, while everything else keeps running. Touching the screen (which re-sends the panel init list) brings it back, so the panel has lost its configuration. Leading hypothesis: a short ALDO3 dip or noise on the reset line, possibly from the charger cycling at its 4.1 V end point (the battery sits at about 4.09 V in CV charging). Not proven; see the open ticket.
+- **Unsolved: mute sometimes toggles by itself,** about 44 to 45 seconds after boot. It was seen in 3 of 5 boots during the microWakeWord work (2026-11-08). The log shows "Key button pressed" with nobody at the board, and in two of the three cases there was no touch event near it. The firmware accepts a KEY (GPIO10) press only after the pin reads low for a stable 50 ms, so this is probably electrical: a real low pulse on GPIO10, not contact bounce. It may share a cause with the black screen above, for example a rail dip, but that is a guess. Not investigated yet. Check whether it also happens on the WakeNet build (commit 493b5ae) and log the GPIO10 level and the AXP2101 status at the moment it happens.
 - **The CO5300 does not answer DCS reads over QSPI on this board.** Reading 0x0A (Read Display Power Mode) through `esp_lcd_panel_io_rx_param` with the 32-bit form `{0x03, 0x00, command, 0x00}` returns 0xFF. Reading SIO0 in 3-wire mode, reading MISO, multi-byte reads with dummy bytes and a 1 MHz clock all returned 0xFF, so the panel is not driving either line. Do not base a display health check on register reads without proving one works first.
 - Unverified: the CO5300 init sequence in the XiaoZhi board file sets a column window of 0x16 to 0x1AF (410 columns). This looks copied from the 2.06 inch board. Check it against the panel if the image is offset or clipped.

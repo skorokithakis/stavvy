@@ -8,10 +8,6 @@ CONFIG_PARTITION_TABLE_OFFSET=0x8000
 # board. Logging only over the native USB port keeps those pins free.
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 
-# WakeNet9s is the only wake word engine that fits and runs on the C6 without
-# PSRAM. Select only Alexa so the packed model image stays small.
-CONFIG_SR_WN_WN9S_ALEXA=y
-
 # The status screen is four labels and a scrollable reply, so LVGL's own heap
 # does not need the 64 KB default. Creating the screen uses about 7 KB; 16 KB
 # leaves room for text and fragmentation. The 38.4 KB draw buffer is allocated

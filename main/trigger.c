@@ -2,7 +2,6 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdlib.h>
 
 #include "audio.h"
 #include "driver/gpio.h"
@@ -10,12 +9,10 @@
 #include "esp_system.h"
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
-#include "esp_wn_iface.h"
-#include "esp_wn_models.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "model_path.h"
+#include "wake_word.h"
 
 static const char *TAG = "trigger";
 
@@ -41,13 +38,14 @@ static const char *TAG = "trigger";
 #define TRIGGER_IDLE_WAIT_MS 100
 
 // The first frames after capture starts carry a large transient from the codec
-// and the amplifier rails coming up. Feeding it to WakeNet would either hide a
+// and the amplifier rails coming up. Feeding it to the model would either hide a
 // real wake word or produce a false one, so it is read and discarded.
 #define WARMUP_DISCARD_MS 100
 
-// WakeNet's detect function runs in this task. Espressif's example runs it in
-// the default 3.5 KB main task, so 4 KB leaves a small margin without spending
-// RAM that the rest of the firmware needs.
+// The inference itself runs in this task, on top of the audio read and the
+// callback that posts to the session, so its stack has to cover TFLite Micro and
+// the esp-nn kernels. 4 KB is the starting point; the detector logs the stack
+// high-water mark once a minute so the real headroom can be seen.
 #define TRIGGER_TASK_STACK_SIZE 4096
 #define TRIGGER_TASK_PRIORITY 5
 
@@ -57,16 +55,12 @@ static const char *TAG = "trigger";
 #define BUTTON_TASK_STACK_SIZE 3072
 #define BUTTON_TASK_PRIORITY 5
 
-#define MODEL_PARTITION_LABEL "model"
-#define WAKE_WORD_FILTER "alexa"
-
 static trigger_callback_t trigger_callback;
 static trigger_button_callback_t button_callback;
 
-static const esp_wn_iface_t *wakenet_interface;
-static model_iface_data_t *wakenet_model;
-static int16_t *frame_samples;
-static size_t frame_sample_count;
+// One feature step of audio, which is the size the detector expects so that it
+// sees a steady stream of slices rather than a burst per read.
+static int16_t frame_samples[WAKE_WORD_FRAME_SAMPLES];
 
 static SemaphoreHandle_t state_mutex;
 static SemaphoreHandle_t transition_mutex;
@@ -140,7 +134,7 @@ static bool discard_startup_audio(void)
     while (discarded < samples_to_discard) {
         esp_task_wdt_reset();
         const size_t remaining = samples_to_discard - discarded;
-        const size_t chunk = remaining < frame_sample_count ? remaining : frame_sample_count;
+        const size_t chunk = remaining < WAKE_WORD_FRAME_SAMPLES ? remaining : WAKE_WORD_FRAME_SAMPLES;
         if (audio_capture_read(frame_samples, chunk) != ESP_OK) {
             ESP_LOGE(TAG, "Could not discard the audio captured during startup");
             return false;
@@ -156,19 +150,22 @@ static void run_detection(void)
         return;
     }
 
+    // Detection restarts after every session, so whatever the model made of the
+    // audio before the session has to go; otherwise a word said just before the
+    // session could immediately trigger the next one.
+    wake_word_reset();
+
     while (detection_requested()) {
         esp_task_wdt_reset();
-        if (audio_capture_read(frame_samples, frame_sample_count) != ESP_OK) {
+        if (audio_capture_read(frame_samples, WAKE_WORD_FRAME_SAMPLES) != ESP_OK) {
             // A failed read means the I2S bus stopped, so there is nothing
             // useful left to detect until a later enable retries it.
             ESP_LOGE(TAG, "Microphone read failed, stopping detection");
             return;
         }
 
-        const wakenet_state_t state = wakenet_interface->detect(wakenet_model, frame_samples);
-        if (state > 0) {
-            const char *word_name = wakenet_interface->get_word_name(wakenet_model, state);
-            ESP_LOGI(TAG, "Detected wake word %s", word_name != NULL ? word_name : "unknown");
+        if (wake_word_process(frame_samples, WAKE_WORD_FRAME_SAMPLES)) {
+            ESP_LOGI(TAG, "Detected wake word");
             trigger_callback();
         }
     }
@@ -261,29 +258,7 @@ void trigger_init(trigger_callback_t wake_word_callback, trigger_button_callback
     ESP_LOGI(TAG, "Free heap before loading the wake word model: %u bytes",
              (unsigned)esp_get_free_heap_size());
 
-    srmodel_list_t *models = esp_srmodel_init(MODEL_PARTITION_LABEL);
-    ESP_ERROR_CHECK(models != NULL && models->num > 0 ? ESP_OK : ESP_FAIL);
-    char *model_name = esp_srmodel_filter(models, ESP_WN_PREFIX, WAKE_WORD_FILTER);
-    ESP_ERROR_CHECK(model_name != NULL ? ESP_OK : ESP_FAIL);
-
-    wakenet_interface = esp_wn_handle_from_name(model_name);
-    ESP_ERROR_CHECK(wakenet_interface != NULL ? ESP_OK : ESP_FAIL);
-    wakenet_model = wakenet_interface->create(model_name, DET_MODE_95);
-    ESP_ERROR_CHECK(wakenet_model != NULL ? ESP_OK : ESP_FAIL);
-
-    // The audio module always captures at 16 kHz. A model with a different
-    // rate would never recognise anything, so this is a setup failure rather
-    // than something to paper over at run time.
-    const int sample_rate = wakenet_interface->get_samp_rate(wakenet_model);
-    ESP_ERROR_CHECK(sample_rate == AUDIO_CAPTURE_SAMPLE_RATE_HZ ? ESP_OK : ESP_FAIL);
-
-    frame_sample_count = (size_t)wakenet_interface->get_samp_chunksize(wakenet_model);
-    ESP_ERROR_CHECK(frame_sample_count > 0 ? ESP_OK : ESP_FAIL);
-    frame_samples = malloc(frame_sample_count * sizeof(int16_t));
-    ESP_ERROR_CHECK(frame_samples != NULL ? ESP_OK : ESP_ERR_NO_MEM);
-
-    ESP_LOGI(TAG, "WakeNet model %s, %d Hz, %u samples per frame, free heap %u bytes",
-             model_name, sample_rate, (unsigned)frame_sample_count, (unsigned)esp_get_free_heap_size());
+    wake_word_init();
 
     state_mutex = xSemaphoreCreateMutex();
     transition_mutex = xSemaphoreCreateMutex();

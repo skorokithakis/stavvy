@@ -62,7 +62,7 @@ static atomic_uint key_press_count;
 #define SESSION_AUDIO_CHUNK_SAMPLES (AUDIO_CAPTURE_SAMPLE_RATE_HZ * 32 / 1000)
 #define SESSION_AUDIO_CHUNK_BYTES ((int)sizeof(int16_t) * SESSION_AUDIO_CHUNK_SAMPLES)
 
-#define SESSION_WAKE_WORD_PHRASE "alexa"
+#define SESSION_WAKE_WORD_PHRASE "Stavrobot"
 
 // The client answers VoiceAssistantRequest immediately. Five seconds tells a
 // slow network apart from a client that has forgotten the request; after that
