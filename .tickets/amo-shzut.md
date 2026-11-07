@@ -1,6 +1,6 @@
 ---
 id: amo-shzut
-status: open
+status: closed
 deps: [amo-oevvt, amo-zkjmv, amo-lgdor, amo-imgbe]
 links: []
 created: 2026-11-06T23:13:23Z

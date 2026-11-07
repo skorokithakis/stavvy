@@ -14,6 +14,7 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_system.h"
+#include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -105,6 +106,11 @@ static bool voice_assistant_api_audio;
 // Set by a sender when writing fails. The API task owns closing the socket, so
 // the sender also shuts the socket down to wake the select() in that task.
 static bool client_write_failed;
+// Set when the session task wants the client gone, for example because a late
+// response to a cancelled request would otherwise be accepted by the next
+// session. Like a write failure, this only asks the API task to drop the
+// client; the descriptor stays owned by that task.
+static bool client_disconnect_requested;
 static int64_t last_message_time_microseconds;
 
 static uint8_t incoming_message_buffer[MAXIMUM_RECEIVE_MESSAGE_BYTES];
@@ -231,6 +237,7 @@ static void drop_client(const char *reason)
     voice_assistant_subscribed = false;
     voice_assistant_api_audio = false;
     client_write_failed = false;
+    client_disconnect_requested = false;
     unlock_state();
 
     if (socket_to_close < 0) {
@@ -646,6 +653,7 @@ static void accept_client(void)
     voice_assistant_subscribed = false;
     voice_assistant_api_audio = false;
     client_write_failed = false;
+    client_disconnect_requested = false;
     last_message_time_microseconds = esp_timer_get_time();
     unlock_state();
 
@@ -680,15 +688,28 @@ static void handle_readable_client(int socket)
 
 static void api_task(void *argument)
 {
+    (void)argument;
+    ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
+
     while (true) {
+        // The select below wakes at least once a second, so this is always far
+        // inside the timeout. A frame that stalls mid-read is bounded by
+        // FRAME_READ_TIMEOUT_SECONDS, which is why the watchdog timeout is
+        // larger than that plus a send.
+        esp_task_wdt_reset();
+
         bool write_failed;
+        bool disconnect_requested;
         int socket_to_watch;
 
         lock_state();
         write_failed = client_write_failed;
+        disconnect_requested = client_disconnect_requested;
         unlock_state();
         if (write_failed) {
             drop_client("a write to the client failed");
+        } else if (disconnect_requested) {
+            drop_client("the session asked for the client to be disconnected");
         }
 
         lock_state();
@@ -785,6 +806,19 @@ bool esphome_api_client_connected(void)
     bool connected = client_socket >= 0;
     unlock_state();
     return connected;
+}
+
+void esphome_api_disconnect_client(void)
+{
+    lock_state();
+    if (client_socket >= 0) {
+        ESP_LOGW(TAG, "Disconnecting the client at the session's request");
+        client_disconnect_requested = true;
+        // shutdown() rather than close(): the API task owns the descriptor, so
+        // this only wakes its select() and lets it run the normal drop path.
+        shutdown(client_socket, SHUT_RDWR);
+    }
+    unlock_state();
 }
 
 bool esphome_api_voice_assistant_subscribed(void)

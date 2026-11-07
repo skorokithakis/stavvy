@@ -74,6 +74,12 @@ void esphome_api_start(void);
 // at a time; a new connection replaces the old one.
 bool esphome_api_client_connected(void);
 
+// Drops the current client through the normal disconnect path and lets it
+// reconnect. A client that is still working on an old request cannot then
+// deliver that request's late response into the next session. Does nothing
+// when no client is connected.
+void esphome_api_disconnect_client(void);
+
 // True when the connected client subscribed to voice assistant events and
 // asked for audio over the API connection. A subscription without API audio
 // would mean UDP audio, which this firmware does not implement, so that case

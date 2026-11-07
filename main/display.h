@@ -9,6 +9,9 @@ typedef enum {
     DISPLAY_STATE_SPEAKING,
     DISPLAY_STATE_ERROR,
     DISPLAY_STATE_NO_SERVER,
+    // The microphone is muted. It is a distinct idle state rather than part of
+    // the error line, because it is the user's own switch and not a failure.
+    DISPLAY_STATE_MUTED,
 } display_state_t;
 
 // Brings up the QSPI panel, LVGL and the status screen. Must run after
@@ -27,7 +30,13 @@ void display_set_reply(const char *text);
 // Clears both text fields and returns the state line to idle.
 void display_clear(void);
 
-// Cycles every state once, leaving the screen idle. This is a hardware check
-// for the boot before the session layer exists; it blocks the caller for about
-// nine seconds and should not be called by the finished firmware.
-void display_run_boot_demo(void);
+// The DCS 0x0A value read at boot, or -1 if the read failed. Used by the
+// diagnostics heartbeat. Register reads return 0xFF on this panel, so the
+// value is reported for diagnosis rather than used to drive a health check.
+int display_last_power_mode(void);
+
+// Asks the display module to re-send the panel init and redraw everything.
+// Safe to call from any task: it only sets a flag, and the LVGL task performs
+// the SPI work under its own lock. Calls within two seconds of a previous
+// recovery are ignored.
+void display_request_recovery(void);

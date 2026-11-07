@@ -13,6 +13,7 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_task_wdt.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -24,6 +25,11 @@ static const char *TAG = "player";
 // needed, and the stack only exists while the task does.
 #define PLAYER_TASK_STACK_SIZE (20 * 1024)
 #define PLAYER_TASK_PRIORITY 5
+
+// The player task otherwise blocks on its request semaphore indefinitely
+// between replies. A timed wait lets it reset the task watchdog while idle,
+// and costs one wake-up per second.
+#define PLAYER_IDLE_WAIT_MS 1000
 
 // The URL is copied into the player because the caller's string may be a
 // temporary buffer on another task's stack. The havpe-server URLs are well
@@ -196,6 +202,9 @@ static esp_err_t decode_and_play(esp_audio_simple_dec_handle_t decoder, esp_http
     bool end_of_stream = false;
 
     while (!end_of_stream) {
+        // A long reply keeps this loop running for its whole duration, so the
+        // watchdog has to be fed here rather than only between requests.
+        esp_task_wdt_reset();
         if (playback_stop_requested()) {
             result = ESP_ERR_INVALID_STATE;
             break;
@@ -362,8 +371,15 @@ static void finish_request(esp_err_t result)
 
 static void player_task(void *argument)
 {
+    (void)argument;
+    ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
+
     for (;;) {
-        xSemaphoreTake(request_semaphore, portMAX_DELAY);
+        if (xSemaphoreTake(request_semaphore, pdMS_TO_TICKS(PLAYER_IDLE_WAIT_MS)) != pdTRUE) {
+            esp_task_wdt_reset();
+            continue;
+        }
+        esp_task_wdt_reset();
 
         lock_state();
         const bool skip = !busy || stop_requested;

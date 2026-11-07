@@ -122,9 +122,45 @@ model image stays small.
 
 The KEY button is on GPIO10. The schematic shows a 10K pull-up (R18) to 3.3 V
 and the switch to ground, so it reads low when pressed. The 100 nF debounce
-capacitor (C22) is marked not fitted, so the firmware debounces the press.
+capacitor (C22) is marked not fitted, so the firmware debounces the press. KEY
+toggles the microphone mute; it is polled by its own task in `trigger.c` rather
+than by the detection loop, because it has to work while the microphone is
+muted and while a session owns the capture device.
+
+## Voice session
+
+`main/voice_session.c` connects the trigger, the API server, the microphone and
+the player into the flow `havpe-server` drives. One session task owns all of it:
+the trigger, API and player callbacks only post messages to its queue, because
+`trigger_disable()` and `player_stop()` wait for those callbacks' tasks and
+calling them from a callback would stall or deadlock that task.
+
+States are idle, awaiting response, streaming, thinking and speaking. A trigger
+with no subscribed API client shows "No server" and leaves the trigger enabled.
+Otherwise the trigger is disabled, `VoiceAssistantRequest(start=true)` goes out
+and the screen shows Listening. The client answers with port 0, after which the
+session reads 512 samples (32 ms, 1024 bytes) at a time and sends each as one
+`VoiceAssistantAudio` frame; it handles its own queue between chunks.
+`STT_VAD_END`, `ERROR` and `RUN_END` stop the stream. `TTS_END` plays the URL and
+the player completion returns to idle; `RUN_END` alone returns to idle once it
+arrives, unless playback is still running. A client disconnect stops streaming
+and playback. Streaming is cancelled with `VoiceAssistantRequest(start=false)`
+after 20 seconds without a stop event; the response and thinking waits have
+their own shorter timeouts so a wedged client cannot keep the trigger disabled.
+
+KEY toggles the microphone mute and does not start a session. Muting disables
+detection and releases the capture device; the idle screen shows a red "Muted"
+line. Unmuting re-enables detection. A press during a session only records the
+requested state, which `return_to_idle()` applies when the session ends, so the
+reply is never cut off. Mute starts false on every boot and is not stored.
+
+`CONFIG_SESSION_SIMULATED_TRIGGER` raises a simulated wake word trigger three
+seconds after an API client connects, for bench checks without speaking to the
+board. It is off by default and is ignored while muted.
 
 ## Gotchas
+
+- **Freeing the serial port.** If flashing fails because `/dev/ttyACM0` is busy, find the holder with `fuser -v /dev/ttyACM0` (or `docker ps` for a leftover IDF container) and stop only that process. Never use `pkill -f` with a short pattern: `pkill -f tio` once killed the user's whole graphical session.
 
 - **Console is USB only.** ESP-IDF's default UART0 console uses GPIO16/GPIO17, which are the IMU INT1/INT2 lines here. `sdkconfig.defaults` moves the console to the USB-Serial-JTAG port. An existing `sdkconfig` overrides `sdkconfig.defaults`, so after changing defaults, change `sdkconfig` too or delete it (you then have to set Wi-Fi credentials again).
 
@@ -132,4 +168,7 @@ capacitor (C22) is marked not fitted, so the firmware debounces the press.
 - **Waveshare's ESP-IDF and Arduino examples swap two pins.** Their `user_config.h` sets LCD CS = GPIO5 and touch INT = GPIO15. The schematic and Waveshare's XiaoZhi board config (`main/boards/waveshare/esp32-c6-touch-amoled-2.16/config.h`) use LCD CS = GPIO15 and touch INT = GPIO5. Trust the schematic.
 - **SD card and display share one SPI bus** (GPIO0 to GPIO2). Use one SPI host with two devices, and do not access both at the same time without bus locking.
 - **The AXP2101 must be set up before peripherals work.** The Waveshare examples enable its ALDO rails at boot. The display, microphones and other parts may not have power until then.
+- **Display connector wiring (J4).** `LCD_RESET` is not on a GPIO: it is pulled up to the ALDO3 rail through R16 (10K), so the panel only resets on an ALDO3 power-up or a dip/noise on that line. The schematic's summary table says GPIO10 = `LCD_RESET`; that is wrong (pressing KEY on GPIO10 does not affect the panel). `LCD_TE` goes only to test pad TP20, not to a GPIO. `DSI_PWR_EN` is pulled up to 3.3 V (always on).
+- **Unsolved: the screen sometimes goes black while idle,** a few minutes after boot, while everything else keeps running. Touching the screen (which re-sends the panel init list) brings it back, so the panel has lost its configuration. Leading hypothesis: a short ALDO3 dip or noise on the reset line, possibly from the charger cycling at its 4.1 V end point (the battery sits at about 4.09 V in CV charging). Not proven; see the open ticket.
+- **The CO5300 does not answer DCS reads over QSPI on this board.** Reading 0x0A (Read Display Power Mode) through `esp_lcd_panel_io_rx_param` with the 32-bit form `{0x03, 0x00, command, 0x00}` returns 0xFF. Reading SIO0 in 3-wire mode, reading MISO, multi-byte reads with dummy bytes and a 1 MHz clock all returned 0xFF, so the panel is not driving either line. Do not base a display health check on register reads without proving one works first.
 - Unverified: the CO5300 init sequence in the XiaoZhi board file sets a column window of 0x16 to 0x1AF (410 columns). This looks copied from the 2.06 inch board. Check it against the panel if the image is offset or clipped.

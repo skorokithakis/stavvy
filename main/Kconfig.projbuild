@@ -42,6 +42,20 @@ menu "Reply player"
 
 endmenu
 
+menu "Voice session"
+
+    config SESSION_SIMULATED_TRIGGER
+        bool "Raise a simulated wake word trigger after a client connects"
+        default n
+        help
+            Bench test only. Three seconds after an ESPHome API client
+            connects, start a session as if the wake word had been detected.
+            This lets the streaming, error and return-to-idle paths be
+            exercised without touching the board; with no speech the client
+            answers "No speech detected". Leave this off in normal builds.
+
+endmenu
+
 menu "Wake word"
 
     # ESP-SR's own Kconfig lists only Hi,乐鑫, Hi,ESP, 你好小智 and Hi,Jason in

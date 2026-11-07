@@ -8,6 +8,7 @@
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "esp_wn_iface.h"
 #include "esp_wn_models.h"
@@ -26,6 +27,19 @@ static const char *TAG = "trigger";
 #define KEY_BUTTON_PRESSED_LEVEL 0
 #define KEY_BUTTON_DEBOUNCE_US (50 * 1000)
 
+// KEY is polled by its own task rather than from the detection loop: it has to
+// work while the wake word is muted and while a session owns the microphone,
+// which are exactly the times the detection task is not reading frames. 20 ms
+// is short enough to see a press that is held for the 50 ms debounce, and the
+// task sleeps between polls.
+#define KEY_BUTTON_POLL_INTERVAL_MS 20
+
+// The detection task is blocked on its wake semaphore whenever the trigger is
+// disabled, which can last for a whole reply. It has to wake at least once
+// inside the watchdog timeout to prove it is still alive, so the wait is timed
+// rather than indefinite. 100 ms is far below the timeout and costs nothing.
+#define TRIGGER_IDLE_WAIT_MS 100
+
 // The first frames after capture starts carry a large transient from the codec
 // and the amplifier rails coming up. Feeding it to WakeNet would either hide a
 // real wake word or produce a false one, so it is read and discarded.
@@ -37,10 +51,17 @@ static const char *TAG = "trigger";
 #define TRIGGER_TASK_STACK_SIZE 4096
 #define TRIGGER_TASK_PRIORITY 5
 
+// The button task only reads a GPIO, checks a timer and posts a message, but
+// the session callback builds its message on the caller's stack, so it needs
+// more than a few hundred bytes.
+#define BUTTON_TASK_STACK_SIZE 3072
+#define BUTTON_TASK_PRIORITY 5
+
 #define MODEL_PARTITION_LABEL "model"
 #define WAKE_WORD_FILTER "alexa"
 
 static trigger_callback_t trigger_callback;
+static trigger_button_callback_t button_callback;
 
 static const esp_wn_iface_t *wakenet_interface;
 static model_iface_data_t *wakenet_model;
@@ -96,11 +117,11 @@ static void poll_key_button(void)
         return;
     }
     key_button_stable_pressed = raw_pressed;
-    // Only the press edge raises a trigger; holding the button must not keep
-    // starting sessions, and the release edge is not a request to listen.
+    // Only the press edge counts; holding the button must not keep toggling
+    // mute, and the release edge is not a request to do anything.
     if (key_button_stable_pressed) {
         ESP_LOGI(TAG, "Key button pressed");
-        trigger_callback(TRIGGER_SOURCE_BUTTON);
+        button_callback();
     }
 }
 
@@ -117,6 +138,7 @@ static bool discard_startup_audio(void)
     const size_t samples_to_discard = AUDIO_CAPTURE_SAMPLE_RATE_HZ * WARMUP_DISCARD_MS / 1000;
     size_t discarded = 0;
     while (discarded < samples_to_discard) {
+        esp_task_wdt_reset();
         const size_t remaining = samples_to_discard - discarded;
         const size_t chunk = remaining < frame_sample_count ? remaining : frame_sample_count;
         if (audio_capture_read(frame_samples, chunk) != ESP_OK) {
@@ -130,12 +152,12 @@ static bool discard_startup_audio(void)
 
 static void run_detection(void)
 {
-    reset_key_button_state();
     if (!discard_startup_audio()) {
         return;
     }
 
     while (detection_requested()) {
+        esp_task_wdt_reset();
         if (audio_capture_read(frame_samples, frame_sample_count) != ESP_OK) {
             // A failed read means the I2S bus stopped, so there is nothing
             // useful left to detect until a later enable retries it.
@@ -147,16 +169,24 @@ static void run_detection(void)
         if (state > 0) {
             const char *word_name = wakenet_interface->get_word_name(wakenet_model, state);
             ESP_LOGI(TAG, "Detected wake word %s", word_name != NULL ? word_name : "unknown");
-            trigger_callback(TRIGGER_SOURCE_WAKE_WORD);
+            trigger_callback();
         }
-        poll_key_button();
     }
 }
 
 static void trigger_task(void *argument)
 {
+    (void)argument;
+    ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
+
     for (;;) {
-        xSemaphoreTake(wake_semaphore, portMAX_DELAY);
+        // A timed wait also covers the disabled state below, where the task
+        // would otherwise sit on the semaphore for the length of a reply.
+        if (xSemaphoreTake(wake_semaphore, pdMS_TO_TICKS(TRIGGER_IDLE_WAIT_MS)) != pdTRUE) {
+            esp_task_wdt_reset();
+            continue;
+        }
+        esp_task_wdt_reset();
 
         lock_state();
         const bool should_run = enabled_request;
@@ -199,10 +229,22 @@ static void trigger_task(void *argument)
     }
 }
 
-void trigger_init(trigger_callback_t callback)
+static void button_task(void *argument)
 {
-    ESP_ERROR_CHECK(callback != NULL ? ESP_OK : ESP_ERR_INVALID_ARG);
-    trigger_callback = callback;
+    (void)argument;
+    ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
+    for (;;) {
+        esp_task_wdt_reset();
+        poll_key_button();
+        vTaskDelay(pdMS_TO_TICKS(KEY_BUTTON_POLL_INTERVAL_MS));
+    }
+}
+
+void trigger_init(trigger_callback_t wake_word_callback, trigger_button_callback_t key_button_callback)
+{
+    ESP_ERROR_CHECK(wake_word_callback != NULL && key_button_callback != NULL ? ESP_OK : ESP_ERR_INVALID_ARG);
+    trigger_callback = wake_word_callback;
+    button_callback = key_button_callback;
 
     const gpio_config_t button_config = {
         .pin_bit_mask = 1ULL << KEY_BUTTON_GPIO,
@@ -255,6 +297,15 @@ void trigger_init(trigger_callback_t callback)
     const BaseType_t task_result =
         xTaskCreate(trigger_task, "wake_word", TRIGGER_TASK_STACK_SIZE, NULL, TRIGGER_TASK_PRIORITY, NULL);
     ESP_ERROR_CHECK(task_result == pdPASS ? ESP_OK : ESP_FAIL);
+
+    // The button task is independent of detection so KEY keeps working when
+    // the microphone is muted or a session has taken the capture device. It is
+    // started last, after the mutexes and the wake word model exist, because a
+    // press calls into the session task which may in turn call trigger_enable()
+    // or trigger_disable().
+    const BaseType_t button_task_result = xTaskCreate(button_task, "key_button", BUTTON_TASK_STACK_SIZE, NULL,
+                                                      BUTTON_TASK_PRIORITY, NULL);
+    ESP_ERROR_CHECK(button_task_result == pdPASS ? ESP_OK : ESP_FAIL);
 }
 
 esp_err_t trigger_enable(void)

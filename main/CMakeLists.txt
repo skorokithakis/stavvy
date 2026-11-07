@@ -12,6 +12,8 @@ idf_component_register(
         "mdns_service.c"
         "trigger.c"
         "player.c"
+        "touch.c"
+        "voice_session.c"
     INCLUDE_DIRS "." "proto"
     PRIV_REQUIRES
         esp_driver_gpio

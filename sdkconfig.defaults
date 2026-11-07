@@ -24,6 +24,20 @@ CONFIG_LV_MEM_SIZE_KILOBYTES=16
 CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_16=y
 
+# A hung task must print a backtrace and reboot instead of leaving the board
+# with a dead display or a session that never returns. 30 seconds is above the
+# longest legitimate block in a subscribed task: the API task can wait 10
+# seconds for the rest of a stalled frame and then 5 seconds to send, and
+# player_stop() can wait 2 seconds for an HTTP read. The idle task is watched
+# too, so a task that spins and starves it is caught. Tasks subscribe
+# themselves and reset inside their own loops; the LVGL port task cannot be
+# subscribed because the managed component never resets the watchdog.
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
+
 # The reply player only ever sees MP3 and 16-bit PCM WAV. esp_audio_codec turns
 # every decoder, container parser and encoder on by default, which would link
 # codecs the firmware never calls and spend flash on them; these are the only

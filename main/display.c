@@ -1,10 +1,11 @@
 #include "display.h"
 
-#include <stddef.h>
+#include <stdatomic.h>
 #include <stdint.h>
 
 #include "driver/spi_master.h"
 #include "esp_heap_caps.h"
+#include "esp_lcd_panel_commands.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_vendor.h"
@@ -12,7 +13,8 @@
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 #include "esp_system.h"
-#include "freertos/FreeRTOS.h"
+#include "esp_task_wdt.h"
+#include "esp_timer.h"
 #include "freertos/task.h"
 #include "lvgl.h"
 #include "sdkconfig.h"
@@ -51,11 +53,32 @@ static const char *TAG = "display";
 // or shortening the panel's life like full brightness would.
 #define DISPLAY_BRIGHTNESS_PERCENT 60
 
+// QSPI command framing from the CO5300 datasheet: instruction 0x02 writes and
+// 0x03 reads a 24-bit address of the form {0x00, command, 0x00}. The SH8601
+// driver passes the same address in the upper 24 bits of a 32-bit command, so
+// the display code does too.
+#define DISPLAY_QSPI_WRITE_COMMAND_OPCODE 0x02
+#define DISPLAY_QSPI_READ_COMMAND_OPCODE 0x03
+
 // LVGL only renders a few labels here, not a demo, so the port's 7 KB default
 // plus a little margin is enough. The extra kilobyte leaves room for the
 // Montserrat text drawing path without wasting much of the 512 KB SRAM.
 #define DISPLAY_LVGL_TASK_STACK_BYTES 8192
 #define DISPLAY_LVGL_TASK_PRIORITY 4
+
+// The LVGL port's task does not feed the task watchdog, so a timer running
+// inside it does. One second is well below the watchdog timeout, and the port
+// wakes at least every 500 ms to run timers, so a hang stops the feed.
+#define DISPLAY_LVGL_WATCHDOG_RESET_MS 1000
+#define DISPLAY_LVGL_TASK_NAME "taskLVGL"
+
+// A touch is a manual recovery, not a gesture, so one re-init every two
+// seconds is plenty and stops a held finger or a noisy controller from
+// continuously resetting the panel.
+#define DISPLAY_RECOVERY_MINIMUM_INTERVAL_US ((int64_t)2 * 1000 * 1000)
+// The LVGL timer only copies an atomic flag most of the time, so it can run
+// often enough to react to a touch without delaying rendering.
+#define DISPLAY_RECOVERY_TIMER_PERIOD_MS 100
 
 // The panel command set is SH8601-compatible, which is why Waveshare uses
 // esp_lcd_sh8601 for a CO5300 board. This list is their 09_LVGL_V9_Test list,
@@ -93,6 +116,7 @@ static const char *const state_text[] = {
     [DISPLAY_STATE_SPEAKING] = "Speaking",
     [DISPLAY_STATE_ERROR] = "Error",
     [DISPLAY_STATE_NO_SERVER] = "No server",
+    [DISPLAY_STATE_MUTED] = "Muted",
 };
 
 static const lv_color_t state_color[] = {
@@ -102,12 +126,30 @@ static const lv_color_t state_color[] = {
     [DISPLAY_STATE_SPEAKING] = LV_COLOR_MAKE(0x21, 0x96, 0xF3),
     [DISPLAY_STATE_ERROR] = LV_COLOR_MAKE(0xF4, 0x43, 0x36),
     [DISPLAY_STATE_NO_SERVER] = LV_COLOR_MAKE(0xFF, 0x98, 0x00),
+    // A deeper red than the error line, so "muted" and "error" are told apart
+    // at a glance even though both are red.
+    [DISPLAY_STATE_MUTED] = LV_COLOR_MAKE(0xD3, 0x2F, 0x2F),
 };
 
 static lv_obj_t *state_label;
 static lv_obj_t *transcript_label;
 static lv_obj_t *reply_label;
 static lv_obj_t *reply_container;
+
+// Kept so the boot power-mode read and the brightness write can use the same
+// io after panel creation.
+static esp_lcd_panel_io_handle_t display_io;
+static esp_lcd_panel_handle_t display_panel;
+
+// The most recent DCS 0x0A read. The heartbeat task reads this from another
+// task, and only display_init() writes it.
+static atomic_int last_panel_power_mode = -1;
+
+// The touch task sets this; the LVGL timer below consumes it. Keeping the SPI
+// work out of the touch task means a touch never touches the panel bus itself.
+static atomic_bool recovery_requested;
+// Only read and written by the LVGL timer.
+static int64_t last_recovery_microseconds;
 
 // Both of Waveshare's working drivers round every invalidated area to even
 // coordinates before it reaches the CO5300. LVGL invalidates arbitrary
@@ -179,6 +221,79 @@ static esp_lcd_panel_handle_t initialise_panel(esp_lcd_panel_io_handle_t io_hand
     return panel_handle;
 }
 
+// The CO5300 datasheet frames a register read as DCS 0x03 followed by the
+// 24-bit address {0x00, command, 0x00}, and esp_lcd_panel_io_rx_param builds
+// exactly that 32-bit word. This is kept as the one attempt at boot: on this
+// panel it returns 0xFF, so no display health check can be based on it.
+static esp_err_t read_panel_power_mode(uint8_t *power_mode)
+{
+    const int command = (DISPLAY_QSPI_READ_COMMAND_OPCODE << 24) | (LCD_CMD_RDDPM << 8);
+    return esp_lcd_panel_io_rx_param(display_io, command, power_mode, sizeof(*power_mode));
+}
+
+static esp_err_t set_panel_brightness(void)
+{
+    const uint8_t brightness = DISPLAY_BRIGHTNESS_PERCENT * 255 / 100;
+    const int command = (DISPLAY_QSPI_WRITE_COMMAND_OPCODE << 24) | (LCD_CMD_WRDISBV << 8);
+    return esp_lcd_panel_io_tx_param(display_io, command, &brightness, sizeof(brightness));
+}
+
+void display_request_recovery(void)
+{
+    // Only a flag: the caller may be the touch task, and the panel bus belongs
+    // to the LVGL context.
+    atomic_store(&recovery_requested, true);
+}
+
+// Called from the LVGL timer, which the port runs with its lock held. Re-sends
+// the whole init list because the panel has no reset line, restores the
+// brightness and marks every pixel dirty so LVGL flushes the frame again.
+static void recover_panel(void)
+{
+    const uint32_t uptime_seconds = (uint32_t)(esp_timer_get_time() / 1000000);
+    ESP_LOGI(TAG, "Touch recovery: re-initialising the panel at %lu s", (unsigned long)uptime_seconds);
+
+    const esp_err_t init_result = esp_lcd_panel_init(display_panel);
+    if (init_result != ESP_OK) {
+        ESP_LOGE(TAG, "Re-initialising the panel failed (0x%x)", init_result);
+        return;
+    }
+    const esp_err_t brightness_result = set_panel_brightness();
+    if (brightness_result != ESP_OK) {
+        ESP_LOGE(TAG, "Restoring the panel brightness failed (0x%x)", brightness_result);
+    }
+
+    lv_obj_invalidate(lv_screen_active());
+    ESP_LOGI(TAG, "Touch recovery: panel re-initialised at %lu s, screen invalidated",
+             (unsigned long)uptime_seconds);
+}
+
+static void handle_recovery_request(lv_timer_t *timer)
+{
+    (void)timer;
+    if (!atomic_exchange(&recovery_requested, false)) {
+        return;
+    }
+
+    const int64_t now = esp_timer_get_time();
+    if (last_recovery_microseconds != 0 &&
+        now - last_recovery_microseconds < DISPLAY_RECOVERY_MINIMUM_INTERVAL_US) {
+        ESP_LOGI(TAG, "Ignoring a touch recovery within 2 s of the previous one");
+        return;
+    }
+
+    last_recovery_microseconds = now;
+    recover_panel();
+}
+
+// Runs in the LVGL task. It is the only thing that proves that task is alive,
+// because the managed port does not call the watchdog API itself.
+static void reset_lvgl_watchdog(lv_timer_t *timer)
+{
+    (void)timer;
+    esp_task_wdt_reset();
+}
+
 static void create_status_screen(void)
 {
     lv_obj_t *screen = lv_screen_active();
@@ -237,8 +352,26 @@ static void create_status_screen(void)
 void display_init(void)
 {
     initialise_spi_bus();
-    esp_lcd_panel_io_handle_t io_handle = initialise_panel_io();
-    esp_lcd_panel_handle_t panel_handle = initialise_panel(io_handle);
+    display_io = initialise_panel_io();
+    display_panel = initialise_panel(display_io);
+
+    // The init list already writes brightness, but sending it here from the
+    // configured percentage keeps the value in one place that any recovery
+    // path can reuse, at the cost of one extra command at boot.
+    ESP_ERROR_CHECK(set_panel_brightness());
+
+    // The read returns 0xFF on this panel, which is the idle level of SIO0
+    // rather than a power-mode value. It is logged and kept for the heartbeat
+    // so the absence of a usable register read is visible in the log, but no
+    // health check can be based on it.
+    uint8_t power_mode = 0;
+    const esp_err_t power_mode_result = read_panel_power_mode(&power_mode);
+    if (power_mode_result == ESP_OK) {
+        atomic_store(&last_panel_power_mode, power_mode);
+        ESP_LOGW(TAG, "Panel power mode at boot: 0x%02X (register reads are not usable on this panel)", power_mode);
+    } else {
+        ESP_LOGE(TAG, "Could not read the panel power mode at boot (0x%x)", power_mode_result);
+    }
 
     const lvgl_port_cfg_t lvgl_configuration = {
         .task_priority = DISPLAY_LVGL_TASK_PRIORITY,
@@ -251,8 +384,8 @@ void display_init(void)
     ESP_ERROR_CHECK(lvgl_port_init(&lvgl_configuration));
 
     const lvgl_port_display_cfg_t display_configuration = {
-        .io_handle = io_handle,
-        .panel_handle = panel_handle,
+        .io_handle = display_io,
+        .panel_handle = display_panel,
         .buffer_size = DISPLAY_BUFFER_PIXELS,
         .double_buffer = false,
         .hres = DISPLAY_WIDTH,
@@ -280,9 +413,18 @@ void display_init(void)
     // LVGL objects may only be created while the port's lock is held.
     lvgl_port_lock(0);
     create_status_screen();
+    lv_timer_create(handle_recovery_request, DISPLAY_RECOVERY_TIMER_PERIOD_MS, NULL);
+    lv_timer_create(reset_lvgl_watchdog, DISPLAY_LVGL_WATCHDOG_RESET_MS, NULL);
     lv_mem_monitor_t lvgl_memory;
     lv_mem_monitor(&lvgl_memory);
     lvgl_port_unlock();
+
+    // Subscribe the port's task now that the timer that feeds the watchdog
+    // exists. The port does not expose its handle, but the task name is fixed
+    // by the managed component.
+    TaskHandle_t lvgl_task = xTaskGetHandle(DISPLAY_LVGL_TASK_NAME);
+    ESP_ERROR_CHECK(lvgl_task != NULL ? ESP_OK : ESP_FAIL);
+    ESP_ERROR_CHECK(esp_task_wdt_add(lvgl_task));
 
     ESP_LOGI(TAG, "CO5300 panel ready, %d x %d, brightness %d%%, LVGL heap %d KB",
              DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_BRIGHTNESS_PERCENT,
@@ -293,6 +435,11 @@ void display_init(void)
     ESP_LOGI(TAG, "Free heap after display init: %u bytes, minimum free heap: %u bytes, largest free block: %u bytes",
              (unsigned)esp_get_free_heap_size(), (unsigned)esp_get_minimum_free_heap_size(),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
+}
+
+int display_last_power_mode(void)
+{
+    return atomic_load(&last_panel_power_mode);
 }
 
 void display_set_state(display_state_t state)
@@ -325,27 +472,4 @@ void display_clear(void)
     display_set_transcript("");
     display_set_reply("");
     display_set_state(DISPLAY_STATE_IDLE);
-}
-
-void display_run_boot_demo(void)
-{
-    display_set_transcript("What is the weather like in Reykjavik tomorrow?");
-    display_set_reply("It will be cloudy in the morning with a chance of light rain, "
-                      "turning brighter in the afternoon. The temperature will be "
-                      "around seven degrees, with a light breeze from the southwest. "
-                      "The evening should stay dry, so it is a good day for a walk "
-                      "along the harbour.");
-
-    static const display_state_t demo_states[] = {
-        DISPLAY_STATE_LISTENING,
-        DISPLAY_STATE_THINKING,
-        DISPLAY_STATE_SPEAKING,
-        DISPLAY_STATE_ERROR,
-        DISPLAY_STATE_NO_SERVER,
-        DISPLAY_STATE_IDLE,
-    };
-    for (size_t index = 0; index < sizeof(demo_states) / sizeof(demo_states[0]); index++) {
-        display_set_state(demo_states[index]);
-        vTaskDelay(pdMS_TO_TICKS(1500));
-    }
 }
