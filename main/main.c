@@ -197,9 +197,7 @@ void app_main(void)
     // the SPI2 bus it shares with the SD card.
     display_init();
     // After the display, because the callback draws on it, and after the PMIC,
-    // which leaves the 3.3 V rail the IMU runs from on. It blocks for about
-    // half a second while it measures the board's resting acceleration, so the
-    // board must be still here.
+    // which leaves the 3.3 V rail the IMU runs from on.
     motion_init(handle_motion);
     // Touch comes after the display because a touch asks the display module to
     // re-initialise the panel.

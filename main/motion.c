@@ -81,29 +81,36 @@ static const char *TAG = "motion";
 
 // The thresholds are first guesses; motion_init()'s task logs the peak of every
 // movement so they can be tuned on the bench. Rotation rate is in radians per
-// second and acceleration deviation is the difference between the measured
-// magnitude and the board's resting magnitude (see
-// measure_resting_acceleration_magnitude()). The still thresholds are lower
-// than the moving ones so a movement that ends slowly does not oscillate
-// between the two states. The gyroscope's initial offset may be up to ±10 dps
-// (0.17 rad/s), so the still threshold has to sit above that rather than just
-// above this board's measured 0.07 rad/s.
+// second and acceleration deviation is the magnitude of the difference between
+// the current sample vector and the running average vector (see
+// MOTION_ACCELERATION_AVERAGE_ALPHA). The still thresholds are lower than the
+// moving ones so a movement that ends slowly does not oscillate between the two
+// states. The gyroscope's initial offset may be up to ±10 dps (0.17 rad/s), so
+// the still threshold has to sit above that rather than just above this board's
+// measured 0.07 rad/s.
 #define MOTION_MOVING_ROTATION_RADIANS_PER_SECOND 0.5f
 #define MOTION_MOVING_ACCELERATION_DEVIATION_G 0.15f
 #define MOTION_STILL_ROTATION_RADIANS_PER_SECOND 0.25f
 #define MOTION_STILL_ACCELERATION_DEVIATION_G 0.06f
 
-// The datasheet allows an accelerometer offset of ±100 mg, and this board sits
-// at about 1.1 g when resting, so comparing against 1 g would leave the
-// resting deviation above the still threshold and the board would never report
-// being put down. Averaging while the board is still at boot gives the
-// reference the deviation is measured from; picking the board up during boot
-// makes the reference wrong until the next reboot.
-#define MOTION_CALIBRATION_SAMPLES 20
+// The reference the deviation is measured from is an exponential moving average
+// of the acceleration vector, per axis, so it follows the board into whatever
+// orientation it is put down in. A value measured once at boot could not: the
+// resting magnitude depends on orientation (1.097 g upright, 0.968 g lying on
+// its left side), so a board booted in one orientation and put down in another
+// never came back below the still threshold and stayed "moving" for good.
+//
+// The time constant is 0.5 s. A much shorter one would let the average catch up
+// with a movement while it is still being judged, so a slow pick-up could pull
+// the deviation below the moving threshold before the 200 ms hold expires. A
+// much longer one would keep the deviation above the still threshold for
+// seconds after the board was put down, delaying the relieved face. At the
+// 40 Hz poll, 0.5 s is 20 samples, and alpha = 1 - e^(-25 ms / 0.5 s) = 0.0488,
+// rounded to 0.05.
+#define MOTION_ACCELERATION_AVERAGE_ALPHA 0.05f
 
 static i2c_master_dev_handle_t motion_device;
 static motion_callback_t motion_callback;
-static float resting_acceleration_magnitude;
 
 static esp_err_t read_registers(uint8_t register_address, uint8_t *data, size_t length)
 {
@@ -127,22 +134,6 @@ static int16_t read_signed_sample(const uint8_t *data)
     return (int16_t)((data[1] << 8) | data[0]);
 }
 
-static float measure_resting_acceleration_magnitude(void)
-{
-    float total = 0;
-    for (int sample = 0; sample < MOTION_CALIBRATION_SAMPLES; sample++) {
-        vTaskDelay(pdMS_TO_TICKS(MOTION_POLL_INTERVAL_MS));
-        uint8_t data[6] = {0};
-        ESP_ERROR_CHECK(read_registers(QMI8658_REGISTER_ACCELERATION_X_LOW, data, sizeof(data)));
-
-        const float x = read_signed_sample(&data[0]) / QMI8658_ACCELEROMETER_COUNTS_PER_G;
-        const float y = read_signed_sample(&data[2]) / QMI8658_ACCELEROMETER_COUNTS_PER_G;
-        const float z = read_signed_sample(&data[4]) / QMI8658_ACCELEROMETER_COUNTS_PER_G;
-        total += sqrtf(x * x + y * y + z * z);
-    }
-    return total / MOTION_CALIBRATION_SAMPLES;
-}
-
 static void motion_task(void *argument)
 {
     (void)argument;
@@ -157,6 +148,15 @@ static void motion_task(void *argument)
     float peak_rotation_rate = 0;
     float peak_acceleration_deviation = 0;
     bool last_read_ok = true;
+
+    // The running average the deviation is measured from, seeded with the first
+    // successful sample. A failed read leaves it as it is: reseeding on the
+    // next sample would zero the deviation for that sample and could hide a
+    // movement that started while the bus was down.
+    float acceleration_average_x = 0;
+    float acceleration_average_y = 0;
+    float acceleration_average_z = 0;
+    bool acceleration_average_seeded = false;
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(MOTION_POLL_INTERVAL_MS));
@@ -187,9 +187,27 @@ static void motion_task(void *argument)
         const float acceleration_x = read_signed_sample(&data[0]) / QMI8658_ACCELEROMETER_COUNTS_PER_G;
         const float acceleration_y = read_signed_sample(&data[2]) / QMI8658_ACCELEROMETER_COUNTS_PER_G;
         const float acceleration_z = read_signed_sample(&data[4]) / QMI8658_ACCELEROMETER_COUNTS_PER_G;
-        const float acceleration_magnitude =
-            sqrtf(acceleration_x * acceleration_x + acceleration_y * acceleration_y + acceleration_z * acceleration_z);
-        const float acceleration_deviation = fabsf(acceleration_magnitude - resting_acceleration_magnitude);
+
+        // The deviation is taken before the average is updated, so this sample
+        // is compared with an average that does not contain it yet. Updating
+        // first would let each sample partly cancel its own contribution and
+        // shrink the deviation a real movement produces.
+        float acceleration_deviation = 0;
+        if (acceleration_average_seeded) {
+            const float difference_x = acceleration_x - acceleration_average_x;
+            const float difference_y = acceleration_y - acceleration_average_y;
+            const float difference_z = acceleration_z - acceleration_average_z;
+            acceleration_deviation =
+                sqrtf(difference_x * difference_x + difference_y * difference_y + difference_z * difference_z);
+            acceleration_average_x += MOTION_ACCELERATION_AVERAGE_ALPHA * difference_x;
+            acceleration_average_y += MOTION_ACCELERATION_AVERAGE_ALPHA * difference_y;
+            acceleration_average_z += MOTION_ACCELERATION_AVERAGE_ALPHA * difference_z;
+        } else {
+            acceleration_average_x = acceleration_x;
+            acceleration_average_y = acceleration_y;
+            acceleration_average_z = acceleration_z;
+            acceleration_average_seeded = true;
+        }
 
         const float rotation_x = read_signed_sample(&data[6]) / QMI8658_GYROSCOPE_COUNTS_PER_DEGREE_PER_SECOND;
         const float rotation_y = read_signed_sample(&data[8]) / QMI8658_GYROSCOPE_COUNTS_PER_DEGREE_PER_SECOND;
@@ -298,9 +316,7 @@ void motion_init(motion_callback_t callback)
     write_register_checked(QMI8658_REGISTER_CONTROL_7, 0x03);
     vTaskDelay(pdMS_TO_TICKS(MOTION_TURN_ON_DELAY_MS));
 
-    resting_acceleration_magnitude = measure_resting_acceleration_magnitude();
-    ESP_LOGI(TAG, "QMI8658 ready at 0x%02X: +/-4 g and +/-512 degrees per second at 235 Hz, resting %.3f g",
-             QMI8658_I2C_ADDRESS, resting_acceleration_magnitude);
+    ESP_LOGI(TAG, "QMI8658 ready at 0x%02X: +/-4 g and +/-512 degrees per second at 235 Hz", QMI8658_I2C_ADDRESS);
 
     const BaseType_t task_result = xTaskCreate(motion_task, "motion", MOTION_TASK_STACK_BYTES, NULL,
                                                MOTION_TASK_PRIORITY, NULL);

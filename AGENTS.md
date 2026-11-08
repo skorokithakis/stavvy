@@ -391,14 +391,21 @@ polls at 40 Hz and calls its callback, from the motion task, only on a
 transition: moving after 200 ms above the thresholds, still after a second
 below them. Those hold times are what separate a pick-up from a screen tap or a
 knock on the desk. The moving thresholds are 0.5 rad/s of rotation and 0.15 g
-of deviation from the resting acceleration magnitude measured at boot; the
-still ones are 0.25 rad/s and 0.06 g. The still thresholds sit lower than the
-moving ones so a movement that ends slowly does not oscillate, and the
-gyroscope's initial offset may be up to ±10 dps (0.17 rad/s), so the still
-rotation threshold has to stay above the board's measured 0.07 rad/s of
-resting noise rather than just above it. The resting magnitude is averaged
-over 20 samples at boot, so picking the board up during boot makes the
-reference wrong until the next reboot.
+of deviation from a running average of the acceleration vector; the still ones
+are 0.25 rad/s and 0.06 g. The still thresholds sit lower than the moving ones
+so a movement that ends slowly does not oscillate, and the gyroscope's initial
+offset may be up to ±10 dps (0.17 rad/s), so the still rotation threshold has to
+stay above the board's measured 0.07 rad/s of resting noise rather than just
+above it.
+
+The average is per axis, seeded with the first sample, and updated after the
+deviation is taken, with a 0.5 s time constant (20 samples, 0.05 per sample). It
+follows the board into whatever orientation it is put down in, which a value
+measured once at boot could not: the resting magnitude is 1.097 g upright and
+0.968 g lying on its left side, so a board booted in one orientation and put down
+in another never came back below the still threshold. A failed read leaves the
+average as it is rather than reseeding it, so a gap on the bus cannot hide a
+movement that started while it was down.
 
 Movement start and stop log at info with the peak rotation and acceleration
 deviation seen, which is what the thresholds should be tuned against. If the
