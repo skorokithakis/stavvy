@@ -64,6 +64,15 @@ static atomic_uint key_press_count;
 
 #define SESSION_WAKE_WORD_PHRASE "Stavrobot"
 
+// The tone is the Home Assistant Voice PE's own wake_word_triggered sound, so
+// Stavvy announces a session with the chime the user knows from that device.
+// main/sounds/regenerate.sh produces it as raw s16le at the ES8311's maximum
+// rate.
+#define WAKE_TONE_SAMPLE_RATE_HZ 48000
+// The session task's stack is 6 KB, so the copy buffer is kept small. A 5 ms
+// chunk also keeps the write from holding the audio lock for long.
+#define WAKE_TONE_CHUNK_SAMPLES (WAKE_TONE_SAMPLE_RATE_HZ / 200)
+
 // The client answers VoiceAssistantRequest immediately. Five seconds tells a
 // slow network apart from a client that has forgotten the request; after that
 // the trigger has to come back rather than let the session wait forever.
@@ -330,6 +339,43 @@ static void handle_startup(void)
              (unsigned)esp_get_free_heap_size());
 }
 
+// Embedded with EMBED_FILES. ESP-IDF does not align embedded data, so the blob
+// cannot be fed to the codec in place: the samples are copied into an aligned
+// buffer as they are written.
+extern const uint8_t wake_word_triggered_pcm[];
+extern const uint8_t _binary_wake_word_triggered_pcm_end[];
+
+// Blocks the session for the length of the tone, which is shorter than the wait
+// for the client's answer in the common case. Anything the client sends while it
+// plays waits in the queue and is handled on the next pass.
+static void play_wake_word_tone(void)
+{
+    const size_t total_bytes = (size_t)(_binary_wake_word_triggered_pcm_end - wake_word_triggered_pcm);
+
+    esp_err_t result = audio_playback_start(WAKE_TONE_SAMPLE_RATE_HZ, 1);
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "Could not start the wake word tone (0x%x)", result);
+        return;
+    }
+
+    int16_t chunk[WAKE_TONE_CHUNK_SAMPLES];
+    const size_t chunk_bytes = sizeof(chunk);
+    for (size_t offset = 0; offset < total_bytes; offset += chunk_bytes) {
+        const size_t remaining = total_bytes - offset;
+        const size_t bytes = remaining < chunk_bytes ? remaining : chunk_bytes;
+        memcpy(chunk, wake_word_triggered_pcm + offset, bytes);
+        result = audio_playback_write(chunk, bytes / sizeof(int16_t));
+        if (result != ESP_OK) {
+            ESP_LOGE(TAG, "Could not play the wake word tone (0x%x)", result);
+            break;
+        }
+    }
+
+    // Closing the codec disables the I2S channel, which discards whatever the
+    // last DMA buffers still hold, so the asset ends with a little silence.
+    audio_playback_stop();
+}
+
 static void start_session(void)
 {
     if (state != SESSION_STATE_IDLE) {
@@ -377,6 +423,11 @@ static void start_session(void)
     deadline_microseconds = now_microseconds() + SESSION_RESPONSE_TIMEOUT_MICROSECONDS;
     ESP_LOGI(TAG, "Session started by the wake word; free heap %u bytes",
              (unsigned)esp_get_free_heap_size());
+
+    // Only once the request is out: a tone for a session that never started
+    // would tell the user to speak into nothing. The client's answer arrives
+    // while this runs and waits in the queue.
+    play_wake_word_tone();
 }
 
 static void handle_voice_response(uint32_t port, bool error)

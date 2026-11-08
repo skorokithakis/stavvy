@@ -25,6 +25,9 @@ idf_component_register(
         # The microWakeWord model is read in place by TFLite Micro, so it is
         # mapped from flash and never copied into the tightly constrained heap.
         "wake_word/stavrobot.tflite"
+        # The wake tone is a few tens of kilobytes, far too much to keep in RAM
+        # for a cosmetic sound, so it is read from flash as it plays.
+        "sounds/wake_word_triggered.pcm"
     PRIV_REQUIRES
         esp_driver_gpio
         esp_driver_i2c

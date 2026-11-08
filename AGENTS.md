@@ -448,6 +448,19 @@ and playback. Streaming is cancelled with `VoiceAssistantRequest(start=false)`
 after 20 seconds without a stop event; the response and thinking waits have
 their own shorter timeouts so a wedged client cannot keep the trigger disabled.
 
+The wake tone is the Voice PE's own `wake_word_triggered` sound from the
+`home-assistant-voice-pe` repository (CC BY 4.0, (c) 2024 Clayton Charles Tapp,
+cctaudio.com). `main/sounds/regenerate.sh` downloads it and keeps only the two
+opening notes, fading them out and padding 30 ms of silence, as the raw s16le
+`main/sounds/wake_word_triggered.pcm` that `EMBED_FILES` maps from flash.
+`play_wake_word_tone()` plays it in the session task just after the request goes
+out and the state becomes awaiting response, never in the no-server path or when
+the send fails. It adds no delay of its own, because in the common case the
+client's answer would still be on its way: it waits in the queue and is handled
+as soon as the tone ends. Anything said during the tone is lost, though, because
+the one I2S bus is playing rather than capturing and the microphone only opens
+after that answer.
+
 KEY toggles the microphone mute and does not start a session. Muting disables
 detection and releases the capture device; the idle screen shows the muted
 face. Unmuting re-enables detection. A press during a session only records the

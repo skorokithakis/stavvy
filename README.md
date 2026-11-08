@@ -91,6 +91,14 @@ accident.
 the details.
 
 
+## Credits
+
+The sound that plays when Stavvy hears the wake word is the Home Assistant Voice PE's
+`wake_word_triggered` sound by Clayton Charles Tapp
+([cctaudio.com](https://www.cctaudio.com/)), used under the
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) licence.
+
+
 ## Licence
 
 AGPL-3.0, see `LICENSE`.
