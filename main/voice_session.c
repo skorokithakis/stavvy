@@ -370,9 +370,11 @@ static void start_session(void)
         return;
     }
 
+    // The listening face waits for handle_voice_response(): the microphone only
+    // opens once the client answers, and showing the face now would invite the
+    // user to speak into a gap where nothing is captured.
     state = SESSION_STATE_AWAITING_RESPONSE;
     deadline_microseconds = now_microseconds() + SESSION_RESPONSE_TIMEOUT_MICROSECONDS;
-    display_set_state(DISPLAY_STATE_LISTENING);
     ESP_LOGI(TAG, "Session started by the wake word; free heap %u bytes",
              (unsigned)esp_get_free_heap_size());
 }
@@ -407,6 +409,7 @@ static void handle_voice_response(uint32_t port, bool error)
 
     state = SESSION_STATE_STREAMING;
     deadline_microseconds = now_microseconds() + SESSION_STREAMING_TIMEOUT_MICROSECONDS;
+    display_set_state(DISPLAY_STATE_LISTENING);
     ESP_LOGI(TAG, "Streaming %u bytes every 32 ms; free heap %u bytes",
              (unsigned)SESSION_AUDIO_CHUNK_BYTES, (unsigned)esp_get_free_heap_size());
 }

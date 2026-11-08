@@ -434,11 +434,13 @@ calling them from a callback would stall or deadlock that task.
 
 States are idle, awaiting response, streaming, thinking and speaking. A trigger
 with no subscribed API client shows "No server" and leaves the trigger enabled.
-Otherwise the trigger is disabled, `VoiceAssistantRequest(start=true)` goes out
-and the screen shows the listening face at full brightness. The client answers
-with port 0, after which the session reads 512 samples (32 ms, 1024 bytes) at a
-time and sends each as one `VoiceAssistantAudio` frame; it handles its own queue
-between chunks.
+Otherwise the trigger is disabled and `VoiceAssistantRequest(start=true)` goes
+out. The client answers with port 0, after which the session opens the
+microphone, shows the listening face at full brightness, reads 512 samples
+(32 ms, 1024 bytes) at a time and sends each as one `VoiceAssistantAudio` frame;
+it handles its own queue between chunks. The face waits for the microphone
+because nothing is captured before then, and havpe-server can take a while to
+answer, so an earlier face would invite speech that is lost.
 `STT_VAD_END`, `ERROR` and `RUN_END` stop the stream. `TTS_END` plays the URL and
 the player completion returns to idle; `RUN_END` alone returns to idle once it
 arrives, unless playback is still running. A client disconnect stops streaming
