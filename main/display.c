@@ -730,6 +730,8 @@ static bool face_has_arcs(face_id_t face)
     case FACE_MUTED:
     case FACE_IDLE_HAPPY_EYES:
     case FACE_IDLE_CURIOUS:
+    case FACE_SURPRISED:
+    case FACE_RELIEVED:
         return true;
     case FACE_SPEAKING:
     case FACE_CONVERSATION_THINKING:

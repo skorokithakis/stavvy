@@ -196,12 +196,19 @@ LVGL 9.5 has no ellipse or Bezier primitive, so the design is approximated:
 adds the 3 s tilt and six fading waves. `FACE_SPEAKING` has bobbing eyes and
 five talk bars. `FACE_MUTED` has dimmed eyes, a zipper and a crossed-out
 microphone. `FACE_IDLE_HAPPY_EYES` is the pink cheeks and arcs, and
-`FACE_IDLE_CURIOUS` is the big whites with the shifting look group. The
-conversation faces add both chat bubbles (the filled robot bubble and the
-outlined user transcript bubble), the thinking dots, the scrollbar and the mini
-faces. The geometry, colours and keyframes are in the design sections of the
-`amo-wvlew`, `amo-ndndv` and `amo-zxkxh` tickets, which follow the user's "Cute
-robot faces.html" design.
+`FACE_IDLE_CURIOUS` is the big whites with the shifting look group.
+`FACE_SURPRISED` has wide eyes with jittering pupils, raised brows, a quivering
+zigzag mouth, four shock lines and a falling sweat drop, and the whole face
+shakes for the first 450 ms of each 3 s cycle. `FACE_RELIEVED` has closed eyes,
+blush, a small outlined mouth and three puffs that drift away, and it sighs
+once over the 4 s it is shown. The conversation faces add both chat bubbles
+(the filled robot bubble and the outlined user transcript bubble), the thinking
+dots, the scrollbar and the mini faces. The geometry, colours and keyframes are
+in the design sections of the `amo-wvlew`, `amo-ndndv`, `amo-zxkxh` and
+`amo-rmixv` tickets, which follow the user's `docs/cute-robot-faces.html`
+design. That file is a Claude artifact bundle: the boards are nested
+gzip+base64 pages inside its `__bundler` manifest, and the SVG in the ticket
+design sections is the reference, so it does not need to be unpacked.
 
 ## Face screen
 
@@ -310,18 +317,18 @@ its own runs on LVGL timers in the LVGL task, so there is no extra task:
 
 - Animation: every 33 ms it rebuilds the current shape list and compares it
   with the previous one. A face that does not move after rounding causes no
-  repaint. The faces that contain arcs (idle, listening, muted, happy eyes and
-  curious) merge all changed shapes into one invalidation box: LVGL redraws the
-  face once per invalidated area, and every arc re-initialises its circle
-  masks, so splitting them into many small areas multiplies that work. An arc
-  invalidates its whole circle rather than a band because LVGL's software arc
-  renderer can spin forever in `draw_buf_flush()` when a large arc is clipped
-  to a band; the listening waves (radius about 160 px) reproduced a watchdog
-  reset that way. The speaking and conversation faces contain no arcs and
-  invalidate each changed shape separately, so a moving scrollbar does not
-  repaint the mini face and the mini face does not repaint the scrollbar. A
-  face change, a drift step on a full-size face, or a change in the number of
-  shapes invalidates the whole face object.
+  repaint. The faces that contain arcs (idle, listening, muted, happy eyes,
+  curious, surprised and relieved) merge all changed shapes into one
+  invalidation box: LVGL redraws the face once per invalidated area, and every
+  arc re-initialises its circle masks, so splitting them into many small areas
+  multiplies that work. An arc invalidates its whole circle rather than a band
+  because LVGL's software arc renderer can spin forever in `draw_buf_flush()`
+  when a large arc is clipped to a band; the listening waves (radius about
+  160 px) reproduced a watchdog reset that way. The speaking and conversation
+  faces contain no arcs and invalidate each changed shape separately, so a
+  moving scrollbar does not repaint the mini face and the mini face does not
+  repaint the scrollbar. A face change, a drift step on a full-size face, or a
+  change in the number of shapes invalidates the whole face object.
 - Blink: the eyes of the current face close from full height to 0.08 over
   90 ms and reopen over 160 ms, 250 ms in total, every 4 to 8 seconds, in
   idle and muted. Each segment uses the same smoothstep as the other

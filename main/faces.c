@@ -18,6 +18,9 @@
 // #DCDCFF at 55% over black and #F72A61 at 45% over black.
 #define FACE_COLOUR_MUTED 0x79798Cu
 #define FACE_COLOUR_CHEEK 0x6F132Cu
+// #F72A61 at 35% over black.
+#define FACE_COLOUR_BLUSH 0x560F22u
+#define FACE_COLOUR_SWEAT 0x7B7BF0u
 #define FACE_COLOUR_WHITE 0xEFEFFFu
 #define FACE_COLOUR_HIGHLIGHT 0xFFFFFFu
 #define FACE_COLOUR_BLACK 0x000000u
@@ -118,6 +121,119 @@ static const face_keyframe_t thinking_gaze_y_keyframes[] = {
     {0, -8.0f},
     {2000, -10.0f},
     {4000, -8.0f},
+};
+
+// The surprised face shakes the whole group for the first 450 ms of its 3 s
+// cycle and rests for the rest. The design also rotates the group by -3, 3,
+// -2 and 2 degrees; that is dropped, because a rotation needs an off-screen
+// layer and the translation alone already reads as a startle.
+static const face_keyframe_t surprised_shake_x_keyframes[] = {
+    {0, 0.0f},
+    {90, -6.0f},
+    {180, 6.0f},
+    {270, -5.0f},
+    {360, 4.0f},
+    {450, 0.0f},
+    {3000, 0.0f},
+};
+
+static const face_keyframe_t surprised_shake_y_keyframes[] = {
+    {0, 0.0f},
+    {90, 2.0f},
+    {180, -2.0f},
+    {270, 1.0f},
+    {360, 0.0f},
+    {450, 0.0f},
+    {3000, 0.0f},
+};
+
+// The mouth quivers about its own centre every 120 ms. The design makes the
+// cycle linear and the vertical scale is applied to the zigzag's offsets from
+// the centre. evaluate_keyframes() smooths each segment, which at these
+// amplitudes moves a corner by well under a pixel.
+static const face_keyframe_t surprised_quiver_x_keyframes[] = {
+    {0, 0.0f},
+    {30, -2.0f},
+    {60, 1.0f},
+    {90, 2.0f},
+    {120, 0.0f},
+};
+
+static const face_keyframe_t surprised_quiver_y_keyframes[] = {
+    {0, 0.0f},
+    {30, 1.0f},
+    {60, -1.0f},
+    {90, 1.0f},
+    {120, 0.0f},
+};
+
+static const face_keyframe_t surprised_quiver_scale_keyframes[] = {
+    {0, 1.0f},
+    {30, 0.75f},
+    {60, 1.15f},
+    {90, 0.85f},
+    {120, 1.0f},
+};
+
+// The sweat drop waits for a fifth of its cycle, appears, runs down the screen
+// and fades out at the end.
+static const face_keyframe_t surprised_drop_y_keyframes[] = {
+    {0, 0.0f},
+    {600, 0.0f},
+    {2700, 60.0f},
+    {3000, 70.0f},
+};
+
+static const face_keyframe_t surprised_drop_opacity_keyframes[] = {
+    {0, 0.0f},
+    {600, 0.0f},
+    {900, 1.0f},
+    {2700, 1.0f},
+    {3000, 0.0f},
+};
+
+// The relieved face sighs in and out once over the 4 s it is shown. The scale
+// changes by only 3%, so heights and stroke widths are left alone and only
+// positions move.
+static const face_keyframe_t relieved_sigh_y_keyframes[] = {
+    {0, 0.0f},
+    {800, -6.0f},
+    {2000, 8.0f},
+    {4000, 0.0f},
+};
+
+static const face_keyframe_t relieved_sigh_scale_keyframes[] = {
+    {0, 1.0f},
+    {800, 1.03f},
+    {2000, 0.97f},
+    {4000, 1.0f},
+};
+
+// The three puffs each run the same 4 s cycle 0.25 s apart, so a later puff is
+// still invisible while the earlier one is already drifting away.
+static const face_keyframe_t relieved_puff_x_keyframes[] = {
+    {0, 0.0f},
+    {1200, 0.0f},
+    {4000, 60.0f},
+};
+
+static const face_keyframe_t relieved_puff_y_keyframes[] = {
+    {0, 0.0f},
+    {1200, 0.0f},
+    {4000, -30.0f},
+};
+
+static const face_keyframe_t relieved_puff_scale_keyframes[] = {
+    {0, 0.6f},
+    {1200, 0.6f},
+    {4000, 1.2f},
+};
+
+static const face_keyframe_t relieved_puff_opacity_keyframes[] = {
+    {0, 0.0f},
+    {1200, 0.0f},
+    {1800, 0.9f},
+    {4000, 0.0f},
 };
 
 // Smoothstep for every segment is not exactly the design's ease-in-out and
@@ -224,6 +340,16 @@ static int add_pill(face_shape_t *shapes, int count, int16_t x, int16_t y, int16
 {
     const int16_t radius = (width < height ? width : height) / 2;
     return add_filled_rectangle(shapes, count, x, y, width, height, radius, rgb, opacity);
+}
+
+// An SVG circle of radius r becomes a fully rounded square of side 2r, which
+// is the same pixels. Taking a centre and a radius keeps the definitions in
+// faces.c matching the design's "circle at (x,y) r" notation.
+static int add_circle(face_shape_t *shapes, int count, int16_t centre_x, int16_t centre_y, int16_t radius,
+                      uint32_t rgb, uint8_t opacity)
+{
+    return add_pill(shapes, count, (int16_t)(centre_x - radius), (int16_t)(centre_y - radius),
+                    (int16_t)(2 * radius), (int16_t)(2 * radius), rgb, opacity);
 }
 
 static int add_line(face_shape_t *shapes, int count, int16_t x1, int16_t y1, int16_t x2, int16_t y2,
@@ -362,13 +488,22 @@ static int add_rotated_pill(face_shape_t *shapes, int count, float centre_x, flo
     return add_pill(shapes, count, x, y, width, height, rgb, FACE_OPAQUE);
 }
 
-static void translate_shapes_vertically(face_shape_t *shapes, int count, float offset)
+// The design's group transforms (the idle breathe, the surprised shake and the
+// relieved sigh) are applied to primitive positions rather than as a layer
+// transform, because LVGL has no off-screen layer here. y2 is the far corner of
+// a rectangle or a line; an arc stores only its centre in y1 and leaves y2
+// unused. Radii and stroke widths keep their sizes, which the relieved sigh's
+// 3% scale makes imperceptible.
+static void transform_shapes(face_shape_t *shapes, int count, float centre_y, float scale_y, float offset_x,
+                             float offset_y)
 {
     for (int index = 0; index < count; index++) {
-        shapes[index].y1 = (int16_t)lroundf(shapes[index].y1 + offset);
+        shapes[index].x1 = (int16_t)lroundf(shapes[index].x1 + offset_x);
+        shapes[index].y1 = (int16_t)lroundf(centre_y + (shapes[index].y1 - centre_y) * scale_y + offset_y);
         // An arc stores its centre in y1 and leaves y2 unused.
         if (shapes[index].kind != FACE_SHAPE_ARC) {
-            shapes[index].y2 = (int16_t)lroundf(shapes[index].y2 + offset);
+            shapes[index].x2 = (int16_t)lroundf(shapes[index].x2 + offset_x);
+            shapes[index].y2 = (int16_t)lroundf(centre_y + (shapes[index].y2 - centre_y) * scale_y + offset_y);
         }
     }
 }
@@ -400,7 +535,7 @@ static int build_idle(face_shape_t *shapes, uint32_t elapsed_ms, float blink)
     count = add_eye(shapes, count, 270, 150, 70, 130, FACE_COLOUR_EYE, blink);
     count = add_quadratic_arc(shapes, count, 215, 320, 240, 342, 265, 320, 10, FACE_COLOUR_EYE, FACE_OPAQUE);
 
-    translate_shapes_vertically(shapes, count, breathe);
+    transform_shapes(shapes, count, 0.0f, 1.0f, 0.0f, breathe);
     return count;
 }
 
@@ -525,6 +660,111 @@ static int build_curious(face_shape_t *shapes, uint32_t elapsed_ms)
     // join fills without a seam.
     count = add_quadratic_arc(shapes, count, 208, 325, 224, 345, 240, 325, 9, FACE_COLOUR_EYE, FACE_OPAQUE);
     count = add_quadratic_arc(shapes, count, 240, 325, 256, 345, 272, 325, 9, FACE_COLOUR_EYE, FACE_OPAQUE);
+    return count;
+}
+
+// The surprised face is shown while the device is moved. Everything in it is
+// one group: the whole face shakes for the first 450 ms, the mouth quivers,
+// the pupils jitter, the shock lines blink and the sweat drop falls. Its brows
+// and mouth are arcs, so display.c merges its changed shapes into one
+// invalidation box.
+static int build_surprised(face_shape_t *shapes, uint32_t elapsed_ms)
+{
+    int count = 0;
+
+    count = add_circle(shapes, count, 160, 215, 62, FACE_COLOUR_EYE, FACE_OPAQUE);
+    count = add_circle(shapes, count, 320, 215, 62, FACE_COLOUR_EYE, FACE_OPAQUE);
+    count = add_quadratic_arc(shapes, count, 112, 118, 160, 88, 205, 112, 9, FACE_COLOUR_EYE, FACE_OPAQUE);
+    count = add_quadratic_arc(shapes, count, 275, 112, 320, 88, 368, 118, 9, FACE_COLOUR_EYE, FACE_OPAQUE);
+
+    // The mouth is a zigzag of eight 13x11 segments from (188,335) to
+    // (292,335). Its own centre is the middle of that box, (240,329.5), and
+    // the quiver scales the segments' offsets from that row.
+    const int mouth_start = count;
+    int16_t mouth_x = 188;
+    int16_t mouth_y = 335;
+    for (int step = 0; step < 8; step++) {
+        const int16_t next_x = (int16_t)(mouth_x + 13);
+        const int16_t next_y = (int16_t)(mouth_y + (step % 2 == 0 ? -11 : 11));
+        count = add_line(shapes, count, mouth_x, mouth_y, next_x, next_y, 8, FACE_COLOUR_EYE, FACE_OPAQUE);
+        mouth_x = next_x;
+        mouth_y = next_y;
+    }
+    transform_shapes(shapes + mouth_start, count - mouth_start, 329.5f,
+                     animation_value(surprised_quiver_scale_keyframes, 5, elapsed_ms, 0, 120),
+                     animation_value(surprised_quiver_x_keyframes, 5, elapsed_ms, 0, 120),
+                     animation_value(surprised_quiver_y_keyframes, 5, elapsed_ms, 0, 120));
+
+    // steps(2) in the design holds each offset for half the 0.18 s cycle
+    // instead of interpolating between them.
+    const bool jitter_late = elapsed_ms % 180 >= 90;
+    const int16_t jitter_x = jitter_late ? 2 : -2;
+    const int16_t jitter_y = jitter_late ? -1 : 1;
+    count = add_circle(shapes, count, (int16_t)(160 + jitter_x), (int16_t)(215 + jitter_y), 15, FACE_COLOUR_BLACK,
+                       FACE_OPAQUE);
+    count = add_circle(shapes, count, (int16_t)(320 + jitter_x), (int16_t)(215 + jitter_y), 15, FACE_COLOUR_BLACK,
+                       FACE_OPAQUE);
+
+    // The shock lines are bright for 250 ms and dim for 250 ms, another
+    // steps(1) animation.
+    const uint8_t zap_opacity = elapsed_ms % 500 < 250 ? FACE_OPAQUE : opacity_from_fraction(0.25f);
+    count = add_line(shapes, count, 70, 120, 90, 140, 6, FACE_COLOUR_ALERT, zap_opacity);
+    count = add_line(shapes, count, 58, 165, 84, 168, 6, FACE_COLOUR_ALERT, zap_opacity);
+    count = add_line(shapes, count, 410, 120, 390, 140, 6, FACE_COLOUR_ALERT, zap_opacity);
+    count = add_line(shapes, count, 422, 165, 396, 168, 6, FACE_COLOUR_ALERT, zap_opacity);
+
+    // The design's teardrop is a circle with a tip; LVGL has no path primitive,
+    // so it stays a circle and only its opacity animates.
+    const int16_t drop_y =
+        (int16_t)lroundf(240 + animation_value(surprised_drop_y_keyframes, 4, elapsed_ms, 0, 3000));
+    const uint8_t drop_opacity =
+        opacity_from_fraction(animation_value(surprised_drop_opacity_keyframes, 5, elapsed_ms, 0, 3000));
+    count = add_circle(shapes, count, 402, drop_y, 14, FACE_COLOUR_SWEAT, drop_opacity);
+
+    transform_shapes(shapes, count, 0.0f, 1.0f,
+                     animation_value(surprised_shake_x_keyframes, 7, elapsed_ms, 0, 3000),
+                     animation_value(surprised_shake_y_keyframes, 7, elapsed_ms, 0, 3000));
+    return count;
+}
+
+// The relieved face is shown for one 4 s sigh after the device is put back
+// down: closed eyes, blush, a small open mouth and three puffs that drift up
+// and to the right. The puffs are the only part outside the sigh group. Its
+// closed eyes, brows and mouth are arcs, so display.c merges its changed
+// shapes into one invalidation box.
+static int build_relieved(face_shape_t *shapes, uint32_t elapsed_ms)
+{
+    int count = 0;
+
+    count = add_pill(shapes, count, 98, 259, 64, 32, FACE_COLOUR_BLUSH, FACE_OPAQUE);
+    count = add_pill(shapes, count, 318, 259, 64, 32, FACE_COLOUR_BLUSH, FACE_OPAQUE);
+    count = add_quadratic_arc(shapes, count, 118, 222, 165, 262, 212, 222, 16, FACE_COLOUR_EYE, FACE_OPAQUE);
+    count = add_quadratic_arc(shapes, count, 268, 222, 315, 262, 362, 222, 16, FACE_COLOUR_EYE, FACE_OPAQUE);
+    count = add_quadratic_arc(shapes, count, 120, 160, 160, 172, 200, 162, 7, FACE_COLOUR_EYE, FACE_OPAQUE);
+    count = add_quadratic_arc(shapes, count, 280, 162, 320, 172, 360, 160, 7, FACE_COLOUR_EYE, FACE_OPAQUE);
+
+    // The mouth is an outlined ellipse 32x24, drawn as a pill of the same
+    // box; add_outline_rectangle expands the centreline by half the stroke.
+    count = add_outline_rectangle(shapes, count, 224, 313, 32, 24, 12, 8, FACE_COLOUR_EYE, FACE_OPAQUE);
+
+    transform_shapes(shapes, count, 240.0f,
+                     animation_value(relieved_sigh_scale_keyframes, 4, elapsed_ms, 0, 4000), 0.0f,
+                     animation_value(relieved_sigh_y_keyframes, 4, elapsed_ms, 0, 4000));
+
+    static const int16_t puff_centres[3][2] = {{272, 318}, {290, 306}, {312, 290}};
+    static const int16_t puff_radii[3] = {9, 12, 15};
+    static const uint32_t puff_delays[3] = {0, 250, 500};
+    for (int puff = 0; puff < 3; puff++) {
+        const uint32_t delay = puff_delays[puff];
+        const float offset_x = animation_value(relieved_puff_x_keyframes, 3, elapsed_ms, delay, 4000);
+        const float offset_y = animation_value(relieved_puff_y_keyframes, 3, elapsed_ms, delay, 4000);
+        const float scale = animation_value(relieved_puff_scale_keyframes, 3, elapsed_ms, delay, 4000);
+        const uint8_t opacity =
+            opacity_from_fraction(animation_value(relieved_puff_opacity_keyframes, 4, elapsed_ms, delay, 4000));
+        const int16_t radius = (int16_t)lroundf(puff_radii[puff] * scale);
+        count = add_circle(shapes, count, (int16_t)lroundf(puff_centres[puff][0] + offset_x),
+                           (int16_t)lroundf(puff_centres[puff][1] + offset_y), radius, FACE_COLOUR_EYE, opacity);
+    }
     return count;
 }
 
@@ -698,6 +938,10 @@ int faces_build(face_id_t face, uint32_t elapsed_ms, const face_context_t *conte
         return build_happy_eyes(shapes, elapsed_ms);
     case FACE_IDLE_CURIOUS:
         return build_curious(shapes, elapsed_ms);
+    case FACE_SURPRISED:
+        return build_surprised(shapes, elapsed_ms);
+    case FACE_RELIEVED:
+        return build_relieved(shapes, elapsed_ms);
     case FACE_CONVERSATION_THINKING:
         return build_conversation_thinking(shapes, elapsed_ms, context);
     case FACE_CONVERSATION_SPEAKING:

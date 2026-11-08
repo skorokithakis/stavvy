@@ -13,6 +13,8 @@ typedef enum {
     FACE_MUTED,
     FACE_IDLE_HAPPY_EYES,
     FACE_IDLE_CURIOUS,
+    FACE_SURPRISED,
+    FACE_RELIEVED,
     FACE_CONVERSATION_THINKING,
     FACE_CONVERSATION_SPEAKING,
     FACE_CONVERSATION_IDLE,
@@ -40,7 +42,9 @@ typedef enum {
     FACE_SHAPE_LINE,
 } face_shape_kind_t;
 
-#define FACE_MAX_SHAPES 16
+// The surprised face needs 19: two eyes, two brows, the mouth's eight zigzag
+// segments, two pupils, four shock lines and the sweat drop.
+#define FACE_MAX_SHAPES 24
 
 // Which sides a FACE_SHAPE_OUTLINE_RECT draws. The user bubble uses a small
 // bottom-right-only outline rect for its tail.
