@@ -203,12 +203,10 @@ shakes for the first 450 ms of each 3 s cycle. `FACE_RELIEVED` has closed eyes,
 blush, a small outlined mouth and three puffs that drift away, and it sighs
 once over the 4 s it is shown. The conversation faces add both chat bubbles
 (the filled robot bubble and the outlined user transcript bubble), the thinking
-dots, the scrollbar and the mini faces. The geometry, colours and keyframes are
-in the design sections of the `amo-wvlew`, `amo-ndndv`, `amo-zxkxh` and
-`amo-rmixv` tickets, which follow the user's `docs/cute-robot-faces.html`
-design. That file is a Claude artifact bundle: the boards are nested
-gzip+base64 pages inside its `__bundler` manifest, and the SVG in the ticket
-design sections is the reference, so it does not need to be unpacked.
+dots, the scrollbar and the mini faces. The geometry, colours and keyframes
+follow the user's `docs/cute-robot-faces.html` design. That file is a Claude
+artifact bundle: the boards are nested gzip+base64 pages inside its
+`__bundler` manifest.
 
 ## Face screen
 
@@ -228,8 +226,8 @@ Which screen each state uses:
   it when the transcript is non-empty.
 - Speaking without text (shortcuts and error sounds): the full-size speaking
   face.
-- Idle, listening, muted, error and no server: the full-size faces, as in
-  `amo-wvlew`. Error and no server show their message in the bottom line.
+- Idle, listening, muted, error and no server: the full-size faces. Error and
+  no server show their message in the bottom line.
 - After speaking: the C2 bubble and the user bubble stay for 2.5 s with the
   mini idle face, at the final scroll position. Then the full-size face of the
   current state returns and both texts clear. An error switches to the full
