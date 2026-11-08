@@ -159,9 +159,9 @@ screen_bottom_z = neck_band_top_z;
 screen_top_z    = screen_bottom_z + screen_height;
 
 /* ------------------ shared interface: arms ------------------ */
-/* The joint: a stub on the body, a blind hole in the arm's flat back. The arm
-   slides straight on along the back plane's normal, so the stub sits on the
-   same axis as the hole. The body's wall stays solid where the stub is.
+/* The joint: a stub on the body, a blind hole in a boss on the arm's inner
+   face. The arm slides straight on along x, so the stub sits on the same axis
+   as the hole. The body's wall stays solid where the stub is.
 
    The stub is a teardrop, not a cylinder: a circle with 45 degree flanks down
    to a point, so its underside prints at 45 degrees instead of overhanging.
