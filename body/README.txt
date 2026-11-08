@@ -7,7 +7,8 @@ FILES
                     part in its print orientation, sitting on z = 0.
   export.sh         regenerates stl/*.stl and the three preview PNGs.
   stl/body.stl      body shell
-  stl/neck.stl      neck: the spigot and the black band under the screen
+  stl/neck.stl      neck: the spigot, its key rib and the black band under the
+                    screen
   stl/arm_left.stl
   stl/arm_right.stl
   preview_front.png, preview_side.png, preview_back.png   (assembly, with a
@@ -28,8 +29,10 @@ ASSEMBLY
   2. Feed the USB-C plug in through the back slot, up through the body and the
      neck's 14 mm bore, and plug it into the screen. The screen then rests on
      the band's top face, located only by the plug.
-  3. Glue the neck's spigot into the body's top socket. The neck's band then
-     sits on the body's top flat.
+  3. Glue the neck's spigot into the body's top socket. The rib on the spigot
+     drops into the matching slot in the socket, so the neck only goes in one
+     way, with the band's slope toward the front, and it cannot turn once it is
+     in. The band then sits on the body's top flat.
   4. Slide each arm onto the 4 mm stub on the side of the body (a blind hole in
      the arm's inner face takes it) and glue it. The stub is a teardrop rather
      than a round pin, so the arm can only go on one way.

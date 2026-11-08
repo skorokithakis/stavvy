@@ -18,8 +18,7 @@
    assembly position; the print_* variants are the same solids turned into their
    print orientations with the bed at z = 0, so the STLs can be regenerated from
    this file alone (see export.sh). */
-part = "assembly";   // body | neck | arm_left | arm_right | assembly
-                     // | print_body | print_neck | print_arm_left | print_arm_right
+part = "assembly"; // [assembly, body, neck, arm_left, arm_right, print_body, print_neck, print_arm_left, print_arm_right]
 
 $fn = 180;
 
@@ -126,6 +125,22 @@ body_top_z           = body_height;
 body_top_radius_x    = top_radius;
 body_top_radius_y    = top_radius * body_oval_scale;
 neck_collar_seat_z   = body_top_z;
+
+/* The key that stops the neck turning in the socket is a rib on the spigot's
+   +x side, in a matching slot in the socket collar. It goes on +x because that
+   is the only side with room for a slot: the socket leaves a 3.9 mm rim across
+   x, but across y the oval squash has already pulled the body's outline in to
+   about 0.8 mm outside the socket, which is too thin to cut into. One key and
+   not two, because a single key also fixes which way the band's 10 degree tilt
+   faces; a key on the opposite side would let the neck go in turned end for
+   end. */
+neck_key_width           = 1.6;   // tangential, across y
+neck_key_protrusion      = 1.0;   // radial, past the spigot's surface
+neck_key_overlap         = 0.3;   // into the spigot, so the union has no coincident faces
+neck_key_side_clearance  = 0.3;   // each side of the slot, across y
+neck_key_tip_clearance   = 0.5;   // slot wall past the key's tip
+neck_key_inner_x         = neck_spigot_diameter / 2 - neck_key_overlap;      // 7.9
+neck_key_outer_x         = neck_spigot_diameter / 2 + neck_key_protrusion;   // 9.2
 
 /* Neck stackup. The neck is a straight band on the body's top flat with the
    spigot hanging under it. It prints upside down, so neither piece needs a
@@ -274,6 +289,21 @@ cavity_wall_r    = profile_radius(cavity_ceiling_z) - wall;
 cone_apex_r      = neck_socket_radius - 0.5;
 cone_top_z       = cavity_ceiling_z + (cavity_wall_r - cone_apex_r) * ceiling_slope;
 
+/* The body's side of the key: a channel through the socket collar, cut from the
+   top flat down past the cone and into the cavity. Its bottom sits below the
+   cone everywhere inside its footprint, so the cutter's own bottom face never
+   lands in material and cannot leave a shelf under the slot. The footprint's
+   furthest corner is measured the way the cone is, with y divided by the squash;
+   the extra millimetre is margin, not fit. */
+neck_key_slot_half_width = neck_key_width / 2 + neck_key_side_clearance;
+neck_key_slot_outer_x    = neck_key_outer_x + neck_key_tip_clearance;
+neck_key_slot_inner_x    = neck_socket_radius - 1;   // inside the bore, so the
+                                                     // cutter leaves no face on it
+neck_key_slot_corner_r   = sqrt(pow(neck_key_slot_outer_x, 2)
+                                + pow(neck_key_slot_half_width / body_oval_scale, 2));
+neck_key_slot_bottom_z   = cavity_ceiling_z
+                           + (cavity_wall_r - neck_key_slot_corner_r) / ceiling_slope - 1;
+
 body_outline = concat([[0, 0]], body_profile, [[0, body_height]]);
 
 cavity_wall = [
@@ -349,6 +379,17 @@ module body() {
     translate([0, 0, bore_bottom_z - 0.01])
       cylinder(r = neck_socket_radius, h = body_height - bore_bottom_z + 2);
 
+    /* Key slot: open at the top flat and down into the cavity, so the neck's key
+       slides straight in as the neck is lowered. Its inner end starts inside the
+       bore rather than on the bore's surface, and its top runs past the flat, so
+       no cutter face is coplanar with the body. */
+    translate([neck_key_slot_inner_x,
+               -neck_key_slot_half_width,
+               neck_key_slot_bottom_z])
+      cube([neck_key_slot_outer_x - neck_key_slot_inner_x,
+            neck_key_width + 2 * neck_key_side_clearance,
+            body_top_z + 0.5 - neck_key_slot_bottom_z]);
+
     // Weight pocket in the underside, ceiling is a small bridge by design.
     translate([0, 0, -0.01])
       cylinder(d = weight_pocket_diameter, h = weight_pocket_depth + 0.01);
@@ -414,11 +455,24 @@ module neck_spigot() {
              h = body_top_z - neck_spigot_bottom_z + 0.01);
 }
 
+/* The key runs the whole spigot and half a millimetre up into the band, which is
+   the only solid it joins at that end, so the union overlaps instead of meeting
+   the band's underside on a coincident face. */
+neck_key_band_overlap = 0.5;
+
+module neck_key() {
+  translate([neck_key_inner_x, -neck_key_width / 2, neck_spigot_bottom_z])
+    cube([neck_key_protrusion + neck_key_overlap,
+          neck_key_width,
+          body_top_z + neck_key_band_overlap - neck_spigot_bottom_z]);
+}
+
 module neck() {
   difference() {
     union() {
       neck_band();
       neck_spigot();
+      neck_key();
     }
     /* Cable bore: through the spigot and the band, open at the band's top so
        the plug comes out flush under the screen and the screen's port can sit
