@@ -16,14 +16,14 @@ FILES
 PRINTING
   body      white, upright as exported, no supports.
   neck      black, upside down as exported (band top face on the bed, spigot
-            standing up), no supports.
+            standing up and 10 degrees off vertical), no supports.
   arms      white, inner face down as exported. The arm is a curved shell, so it
             needs supports under the inner face - tree supports, around 400 mm2
             each. The other parts print without supports.
   Suggested: 0.4 mm nozzle, 0.2 mm layers, 3 perimeters, 15-20% infill.
 
 ASSEMBLY
-  1. Print the neck first and test-fit the screen on the band's flat top before
+  1. Print the neck first and test-fit the screen on the band's top face before
      printing the rest.
   2. Feed the USB-C plug in through the back slot, up through the body and the
      neck's 14 mm bore, and plug it into the screen. The screen then rests on
@@ -33,6 +33,14 @@ ASSEMBLY
   4. Slide each arm onto the 4 mm stub on the side of the body (a blind hole in
      the arm's inner face takes it) and glue it. The stub is a teardrop rather
      than a round pin, so the arm can only go on one way.
+
+TILT
+  The neck's band top is not level: it slopes up towards the front by 10
+  degrees (neck_tilt in the .scad), pivoting about the line through the bore
+  at y = 0, z = 53. The band is about 6.6 mm tall at the front and 3.4 mm at
+  the back, and the screen sits on that slope, so it faces slightly up.
+  Because the pivot runs over the bore, the band is still 5 mm deep over the
+  bore and the screen's port still lands over it.
 
 WEIGHT
   The body has a 17 mm pocket in its underside: a stack of small coins or a
@@ -47,5 +55,5 @@ UNTESTED ASSUMPTIONS
     left to right and about 40% of the depth back from the front face. The
     screen sits 2.3 mm toward the back so the port is over the cable bore
     (screen_port_from_front in the .scad).
-  - Nothing holds the screen except the plug: it can wobble on the band's flat
-    top and slide off if the robot is tipped.
+  - Nothing holds the screen except the plug: it can wobble on the band's
+    sloped top and slide off if the robot is tipped.

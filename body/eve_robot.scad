@@ -129,9 +129,21 @@ neck_collar_seat_z   = body_top_z;
 
 /* Neck stackup. The neck is a straight band on the body's top flat with the
    spigot hanging under it. It prints upside down, so neither piece needs a
-   flare to keep its overhangs in budget. */
-neck_band_height = 5.0;   // visible black band, outline = the body top flat
-neck_band_top_z  = body_top_z + neck_band_height;   // 53; the screen sits here
+   flare to keep its overhangs in budget.
+
+   The band's top is one plane through the line y = 0, z = neck_band_top_z,
+   tipped back by neck_tilt so the screen resting on it faces slightly up. The
+   pivot runs through the bore centre, so the band is still 5 mm deep over the
+   bore: the screen's height, and with it its port, stay where they were, and
+   the tilt only trades material from the back of the band to the front. */
+neck_band_height = 5.0;   // visible black band at y = 0, outline = the body top flat
+neck_band_top_z  = body_top_z + neck_band_height;   // 53; the screen pivots here
+neck_tilt        = 10;    // degrees; the front (-y) edge is the higher one
+/* tan(tilt) times half the band's depth, so the front face comes out about
+   6.6 mm tall and the back about 3.4 mm. */
+neck_band_rise    = tan(neck_tilt) * body_top_radius_y;
+neck_band_front_z = neck_band_top_z + neck_band_rise;
+neck_band_back_z  = neck_band_top_z - neck_band_rise;
 
 screen_width    = 46;
 screen_height   = 46;
@@ -170,8 +182,9 @@ arm_boss_face_x    = max([for (i = [0 : 20])
 
 /* ----------------------------- neck -----------------------------
    Two solids: the spigot that plugs into the body's socket, and the band that
-   sits on the body's top flat. The band's top is a bare flat annulus, so the
-   screen rests on it located only by the USB-C plug in the bore.
+   sits on the body's top flat. The band's top is a bare plane, tipped back by
+   neck_tilt, so the screen resting on it faces slightly up; nothing else holds
+   the screen but the USB-C plug in the bore.
 
    Modelled in assembly position; the print orientation is upside down (band
    top on the bed, spigot up) and is applied at export. Nothing overhangs in
@@ -323,32 +336,6 @@ module cable_slot_cut() {
           cylinder(r = slot_radius, h = 18);
 }
 
-/* Stub on the body's side, on the arm's back-plane normal. Built per side with
-   a rotation rather than a mirror: a mirrored solid has inverted faces and CGAL
-   silently ignores it in a boolean. */
-/* Cross-section in a frame where +x is "down": the circle's upper half, then
-   the two 45 degree flanks meeting at a point at (r, 0). */
-function teardrop_2d(dia, steps = 36) =
-  concat(
-    [for (i = [0 : steps])
-       let (a = 90 + 180 * i / steps)
-         [cos(a) * dia / 2, sin(a) * dia / 2]],
-    [[dia / 2, 0]]);
-
-module arm_stub_right() {
-  translate([arm_stub_base_x - arm_stub_dir[0], 0, arm_peg_z - arm_stub_dir[2]])
-    rotate([0, 90 - atan(arm_back_tilt), 0])
-      linear_extrude(height = arm_stub_length + 1)
-        polygon(teardrop_2d(arm_stub_diameter));
-}
-
-/* Half a turn about z, so the left stub is the right one rotated, not mirrored,
-   and its teardrop still points down. */
-module arm_stub(side) {
-  if (side > 0) arm_stub_right();
-  else rotate([0, 0, 180]) arm_stub_right();
-}
-
 module body() {
   difference() {
     union() {
@@ -375,13 +362,18 @@ module body() {
 
 module dummy_screen() {
   // Never exported: only here so the body/head proportions can be judged.
-  color([0.07, 0.08, 0.10])
-    translate([-screen_width / 2, screen_y_offset - screen_depth / 2, screen_bottom_z])
-      hull()
-        for (x = [2, screen_width - 2])
-          for (y = [2, screen_depth - 2])
-            for (z = [2, screen_height - 2])
-              translate([x, y, z]) sphere(r = 2, $fn = 16);
+  // It sits on the band's top plane, so it takes the same tilt about the same
+  // pivot line.
+  translate([0, 0, neck_band_top_z])
+    rotate([-neck_tilt, 0, 0])
+      translate([0, 0, -neck_band_top_z])
+        color([0.07, 0.08, 0.10])
+          translate([-screen_width / 2, screen_y_offset - screen_depth / 2, screen_bottom_z])
+            hull()
+              for (x = [2, screen_width - 2])
+                for (y = [2, screen_depth - 2])
+                  for (z = [2, screen_height - 2])
+                    translate([x, y, z]) sphere(r = 2, $fn = 16);
 }
 
 module assembly() {
@@ -397,11 +389,23 @@ module assembly() {
 /* ---------------------------- neck ---------------------------- */
 
 /* The band is an extrusion of the body's top flat, so the body's silhouette
-   carries straight on into the black neck without a lip. */
+   carries straight on into the black neck without a lip, cut off by the tipped
+   top plane. */
 module neck_band() {
-  translate([0, 0, body_top_z])
-    linear_extrude(height = neck_band_height)
-      scale([1, body_oval_scale]) circle(r = body_top_radius_x, $fn = $fn);
+  intersection() {
+    translate([0, 0, body_top_z])
+      linear_extrude(height = neck_band_front_z - body_top_z)
+        scale([1, body_oval_scale]) circle(r = body_top_radius_x, $fn = $fn);
+    /* Everything below the top plane: a box turned about the pivot line, big
+       enough to pass both ends of the band. Cutting with a plane rather than
+       tilting the extrusion keeps the band's side walls vertical, so its
+       outline is still the body's own. */
+    translate([0, 0, neck_band_top_z])
+      rotate([-neck_tilt, 0, 0])
+        translate([0, 0, -4 * neck_band_height])
+          linear_extrude(height = 4 * neck_band_height)
+            square([4 * body_top_radius_x, 4 * body_top_radius_x], center = true);
+  }
 }
 
 module neck_spigot() {
@@ -419,10 +423,11 @@ module neck() {
     /* Cable bore: through the spigot and the band, open at the band's top so
        the plug comes out flush under the screen and the screen's port can sit
        over it. Runs a millimetre past each end so neither cut ends on a face
-       of the solid, which would leave coplanar faces in the boolean. */
+       of the solid, which would leave coplanar faces in the boolean; the top
+       end clears the band's highest point, at its front edge. */
     translate([0, 0, neck_spigot_bottom_z - 1])
       cylinder(d = neck_bore_diameter,
-               h = neck_band_top_z - neck_spigot_bottom_z + 2);
+               h = neck_band_front_z - neck_spigot_bottom_z + 2);
   }
 }
 
@@ -510,8 +515,12 @@ module arm_groove_cut() {
                      h = arm_groove_width / 2 + depth, $fn = 32);
 }
 
-/* Teardrop cross-section: a circle with 45 degree flanks down to a point, so
-   the stub's underside prints at 45 degrees instead of overhanging. */
+/* Stub on the body's side, pointing straight out along x. Built per side with
+   a rotation rather than a mirror: a mirrored solid has inverted faces and CGAL
+   silently ignores it in a boolean. */
+/* Teardrop cross-section in a frame where +x is "down": the circle's upper half,
+   then the two 45 degree flanks meeting at a point at (r, 0), so the stub's
+   underside prints at 45 degrees instead of overhanging. */
 function teardrop_2d(dia, steps = 36) =
   concat(
     [for (i = [0 : steps])
@@ -589,9 +598,10 @@ module arm_left() {
 
 /* ------------------------ print orientations ------------------------
    Body: upright, exactly as modelled.
-   Neck: upside down, band top on the bed. The flip about x then drops the
-   band's top face (z = neck_band_top_z) onto z = 0, leaving the spigot standing
-   up. No overhangs and no bridges that way.
+   Neck: upside down, band top on the bed. The flip about x then the extra
+   neck_tilt turn put the band's tipped top plane on z = 0, leaving the spigot
+   standing up 10 degrees off vertical. A plane is still a plane, so the part
+   sits flat on the bed and nothing overhangs; no supports.
    Arms: on the inner face, tipped a little past flat, with the shift below
    putting the lowest point of that face on z = 0. The inner face is curved, so
    this orientation needs supports under it; it was chosen as the least support
@@ -607,7 +617,15 @@ print_arm_shift = -4.39982;   // measured: the lowest point of the inner face in
                             // orientation, from the exported mesh
 
 module print_body()  { body(); }
-module print_neck()  { translate([0, 0, neck_band_top_z]) rotate([180, 0, 0]) neck(); }
+/* Half a turn about x brings the band's top to the bed; the extra neck_tilt
+   levels that plane, since the flip alone would leave it 10 degrees off the
+   bed and half the band buried in it. The shift is then the plane's distance
+   from the origin after the turn. */
+module print_neck()  {
+  translate([0, 0, neck_band_top_z * cos(neck_tilt)])
+    rotate([180 + neck_tilt, 0, 0])
+      neck();
+}
 
 module print_arm_right() {
   translate([0, 0, print_arm_shift])
