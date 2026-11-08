@@ -62,6 +62,32 @@ static atomic_uint key_press_count;
 #define SESSION_AUDIO_CHUNK_SAMPLES (AUDIO_CAPTURE_SAMPLE_RATE_HZ * 32 / 1000)
 #define SESSION_AUDIO_CHUNK_BYTES ((int)sizeof(int16_t) * SESSION_AUDIO_CHUNK_SAMPLES)
 
+// +12 dB of digital gain on the streamed audio only. The ES7210 captures low
+// enough that the client's Silero detector scores clear speech below its 0.35
+// start threshold and answers "No speech detected": Stavvy peaks around
+// -23 dBFS where the Voice PE, which runs automatic gain in its audio processor,
+// is about 19 dB higher. Raising the analog gain instead would give only the
+// 7.5 dB up to the codec's 37.5 dB maximum and would also change the wake word
+// input, which does not need it. Speech close to the board clips at this gain,
+// which is accepted because a clipped word is still detected.
+#define SESSION_AUDIO_GAIN 4
+
+// The product does not fit in 16 bits for a full-scale sample, so it is taken in
+// 32 bits and clamped. Clipping rather than wrapping keeps loud speech a clean
+// square wave instead of an inverted, distorted one.
+static void apply_session_audio_gain(int16_t *samples, size_t count)
+{
+    for (size_t index = 0; index < count; index++) {
+        int32_t amplified = (int32_t)samples[index] * SESSION_AUDIO_GAIN;
+        if (amplified > INT16_MAX) {
+            amplified = INT16_MAX;
+        } else if (amplified < INT16_MIN) {
+            amplified = INT16_MIN;
+        }
+        samples[index] = (int16_t)amplified;
+    }
+}
+
 #define SESSION_WAKE_WORD_PHRASE "Stavrobot"
 
 // The tone is the Home Assistant Voice PE's own wake_word_triggered sound, so
@@ -692,6 +718,8 @@ static void stream_audio(void)
             display_set_reply("The microphone stopped working.");
             break;
         }
+
+        apply_session_audio_gain(samples, SESSION_AUDIO_CHUNK_SAMPLES);
 
         const esp_err_t send_result =
             esphome_api_send_audio((const uint8_t *)samples, SESSION_AUDIO_CHUNK_BYTES, false);
