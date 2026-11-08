@@ -19,9 +19,11 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 # from the DMA-capable heap, and the display still has to leave at least 60 KB
 # free during MP3 playback.
 CONFIG_LV_MEM_SIZE_KILOBYTES=24
-# Only the two Montserrat sizes the screen uses are compiled in: 16 for the
-# state and transcript, 14 for the reply. 14 is LVGL's default; listing both
-# keeps the choice explicit and the other sizes out of flash.
+# Only two Montserrat sizes are compiled in. 20 is for the error and no-server
+# message line; the conversation text uses the DM Sans fonts in main/fonts/.
+# 14 is LVGL's default font (LV_FONT_DEFAULT), which LVGL needs even though no
+# widget sets it. Listing both keeps the choice explicit and the other sizes
+# out of flash.
 CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 
