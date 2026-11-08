@@ -244,6 +244,9 @@ static char transcript_text[ESPHOME_API_EVENT_VALUE_MAX_BYTES + 1];
 // ellipsis has to be built here. The extra four bytes are the three-byte
 // ellipsis and the terminator.
 static char transcript_shown[ESPHOME_API_EVENT_VALUE_MAX_BYTES + 4];
+// The error message line has the same problem and the same static-prefix
+// treatment; Montserrat 20 has no U+2026, so it appends three full stops.
+static char message_shown[ESPHOME_API_EVENT_VALUE_MAX_BYTES + 4];
 static int32_t conversation_user_bubble_width;
 static int32_t conversation_user_bubble_height;
 // A 1024-byte reply full of newlines is about 35,000 px tall, so these stay
@@ -952,31 +955,34 @@ static size_t utf8_prefix_length(const char *text, size_t byte_limit)
     return length;
 }
 
-// Writes prefix_text[0..cut) plus U+2026 into transcript_shown and measures
-// it with the label's font and width.
-static bool transcript_prefix_fits(const char *text, size_t cut, const lv_font_t *font, int32_t width,
-                                   int32_t max_height)
+// Writes text[0..cut) plus the caller's ellipsis into shown and measures it
+// with the label's font and width. shown_size is the destination's capacity.
+static bool shown_prefix_fits(const char *text, char *shown, size_t shown_size, size_t cut,
+                              const char *ellipsis, const lv_font_t *font, int32_t width, int32_t max_height)
 {
-    memcpy(transcript_shown, text, cut);
-    memcpy(transcript_shown + cut, "\xE2\x80\xA6", 3);
-    transcript_shown[cut + 3] = '\0';
+    const size_t ellipsis_length = strlen(ellipsis);
+    memcpy(shown, text, cut);
+    memcpy(shown + cut, ellipsis, ellipsis_length);
+    shown[cut + ellipsis_length] = '\0';
 
     lv_point_t size;
-    lv_text_get_size(&size, transcript_shown, font, 0, 0, width, LV_TEXT_FLAG_NONE);
+    lv_text_get_size(&size, shown, font, 0, 0, width, LV_TEXT_FLAG_NONE);
     return size.y <= max_height;
 }
 
-// Builds the text shown in the transcript label: the whole string when it fits,
-// otherwise the longest UTF-8-safe prefix that still fits with U+2026 appended.
-// The binary search is over byte lengths; each probe measures the resulting
-// prefix with the label's own font and width. The last space within a small
-// window is preferred as the cut so the ellipsis rarely splits a word.
-static void build_shown_transcript(const char *text, const lv_font_t *font, int32_t width, int32_t max_height)
+// Builds the text shown in a static label: the whole string when it fits,
+// otherwise the longest UTF-8-safe prefix that still fits with the caller's
+// ellipsis appended. The binary search is over byte lengths; each probe
+// measures the resulting prefix with the label's own font and width. The last
+// space within a small window is preferred as the cut so the ellipsis rarely
+// splits a word.
+static void build_shown_text(const char *text, char *shown, size_t shown_size, const char *ellipsis,
+                             const lv_font_t *font, int32_t width, int32_t max_height)
 {
     lv_point_t full_size;
     lv_text_get_size(&full_size, text, font, 0, 0, width, LV_TEXT_FLAG_NONE);
     if (full_size.y <= max_height) {
-        strlcpy(transcript_shown, text, sizeof(transcript_shown));
+        strlcpy(shown, text, shown_size);
         return;
     }
 
@@ -987,7 +993,7 @@ static void build_shown_transcript(const char *text, const lv_font_t *font, int3
     while (low < high) {
         const size_t mid = low + (high - low + 1) / 2;
         const size_t cut = utf8_prefix_length(text, mid);
-        if (transcript_prefix_fits(text, cut, font, width, max_height)) {
+        if (shown_prefix_fits(text, shown, shown_size, cut, ellipsis, font, width, max_height)) {
             best_cut = cut;
             low = mid;
         } else {
@@ -1008,9 +1014,10 @@ static void build_shown_transcript(const char *text, const lv_font_t *font, int3
         cut--;
     }
 
-    memcpy(transcript_shown, text, cut);
-    memcpy(transcript_shown + cut, "\xE2\x80\xA6", 3);
-    transcript_shown[cut + 3] = '\0';
+    const size_t ellipsis_length = strlen(ellipsis);
+    memcpy(shown, text, cut);
+    memcpy(shown + cut, ellipsis, ellipsis_length);
+    shown[cut + ellipsis_length] = '\0';
 }
 
 // C1's transcript is 24 px italic, wraps to at most three lines and ends in an
@@ -1049,7 +1056,8 @@ static void configure_transcript_c1(void)
     conversation_user_bubble_width = width;
     conversation_user_bubble_height = label_height + vertical;
 
-    build_shown_transcript(transcript_text, &dm_sans_italic_24, content_width, label_height);
+    build_shown_text(transcript_text, transcript_shown, sizeof(transcript_shown), "\xE2\x80\xA6",
+                     &dm_sans_italic_24, content_width, label_height);
     lv_label_set_long_mode(transcript_label, LV_LABEL_LONG_MODE_WRAP);
     lv_obj_set_style_text_font(transcript_label, &dm_sans_italic_24, 0);
     lv_obj_set_pos(transcript_label,
@@ -1082,8 +1090,8 @@ static void configure_transcript_c2(void)
     conversation_user_bubble_width = width;
     conversation_user_bubble_height = DISPLAY_CONVERSATION_C2_USER_HEIGHT;
 
-    build_shown_transcript(transcript_text, &dm_sans_italic_18, width - horizontal,
-                           DISPLAY_CONVERSATION_C2_USER_LINE_HEIGHT);
+    build_shown_text(transcript_text, transcript_shown, sizeof(transcript_shown), "\xE2\x80\xA6",
+                     &dm_sans_italic_18, width - horizontal, DISPLAY_CONVERSATION_C2_USER_LINE_HEIGHT);
     lv_label_set_long_mode(transcript_label, LV_LABEL_LONG_MODE_CLIP);
     lv_obj_set_style_text_font(transcript_label, &dm_sans_italic_18, 0);
     lv_obj_set_pos(transcript_label,
@@ -1199,10 +1207,15 @@ static void text_clear_timer_callback(lv_timer_t *timer)
 static void show_state_message(display_state_t state)
 {
     if (state == DISPLAY_STATE_NO_SERVER) {
-        lv_label_set_text_static(message_label, "No server");
+        build_shown_text("No server", message_shown, sizeof(message_shown), "...", &lv_font_montserrat_20,
+                         DISPLAY_MESSAGE_WIDTH, DISPLAY_MESSAGE_HEIGHT);
+        lv_label_set_text_static(message_label, message_shown);
         message_show(true);
     } else if (state == DISPLAY_STATE_ERROR) {
-        lv_label_set_text_static(message_label, reply_text[0] != '\0' ? reply_text : "Error");
+        const char *text = reply_text[0] != '\0' ? reply_text : "Error";
+        build_shown_text(text, message_shown, sizeof(message_shown), "...", &lv_font_montserrat_20,
+                         DISPLAY_MESSAGE_WIDTH, DISPLAY_MESSAGE_HEIGHT);
+        lv_label_set_text_static(message_label, message_shown);
         message_show(true);
     } else {
         message_show(false);
@@ -1309,8 +1322,8 @@ static void create_face_screen(void)
     lv_obj_set_style_text_color(message_label, lv_color_hex(0xE0E0E0), 0);
     lv_obj_set_pos(message_label, DISPLAY_MESSAGE_MARGIN, DISPLAY_MESSAGE_TOP);
     lv_obj_set_size(message_label, DISPLAY_MESSAGE_WIDTH, DISPLAY_MESSAGE_HEIGHT);
-    lv_label_set_long_mode(message_label, LV_LABEL_LONG_MODE_DOTS);
-    lv_label_set_text_static(message_label, "");
+    lv_label_set_long_mode(message_label, LV_LABEL_LONG_MODE_WRAP);
+    lv_label_set_text_static(message_label, message_shown);
     lv_obj_add_flag(message_label, LV_OBJ_FLAG_HIDDEN);
 
     show_face(state_face[current_state]);

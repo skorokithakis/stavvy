@@ -226,7 +226,9 @@ Which screen each state uses:
 The bottom message line starts at row 396 and is 84 px of Montserrat 20. It is
 the space the transcript used to occupy and is only shown for error and no
 server. The lowest full-size shape is the speaking bars, which end at row 356,
-and 20 px of drift takes that to 376, so the message never covers the face.
+and 20 px of drift takes that to 376, so the message never covers the face. A
+long message uses the same static-prefix ellipsis as the transcript, but with
+three full stops because Montserrat 20 has no U+2026.
 
 The conversation screen:
 
