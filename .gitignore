@@ -6,3 +6,6 @@ managed_components/
 # The face images the user generated earlier live here. The firmware no longer
 # uses them: the faces are drawn by code in main/faces.c.
 assistant_faces_alpha_480/
+# body/export.sh generates these from body/eve_robot.scad.
+body/stl/
+body/preview_*.png

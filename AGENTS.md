@@ -447,6 +447,19 @@ reply is never cut off. Mute starts false on every boot and is not stored.
 seconds after an API client connects, for bench checks without speaking to the
 board. It is off by default and is ignored while muted.
 
+## Robot body
+
+`body/` holds the 3D-printable EVE-style body that the board sits on. It is an
+OpenSCAD model, not firmware, and the ESP-IDF build ignores it.
+`body/eve_robot.scad` is the whole model: `part = "assembly"` (the default)
+shows the assembled robot with a dummy screen, and `print_body`, `print_neck`,
+`print_arm_left` and `print_arm_right` give each part in its print orientation.
+`body/export.sh` writes `body/stl/*.stl` and three `preview_*.png` renders and
+fails if a part does not sit on the bed. It needs `openscad` (or `OPENSCAD`
+set) and `python3`. The outputs are git-ignored. `body/README.txt` has the
+print settings, the assembly steps and the untested assumptions, for example
+that the USB-C plug alone holds the screen.
+
 ## Gotchas
 
 - **Freeing the serial port.** If flashing fails because `/dev/ttyACM0` is busy, find the holder with `fuser -v /dev/ttyACM0` (or `docker ps` for a leftover IDF container) and stop only that process. Never use `pkill -f` with a short pattern: `pkill -f tio` once killed the user's whole graphical session.
