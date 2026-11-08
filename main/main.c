@@ -217,9 +217,11 @@ void app_main(void)
     // button task starts polling KEY as soon as it exists.
     voice_session_init();
 
-    // Load the wake word model and configure KEY. Detection stays off until
-    // the session task applies the boot state below; KEY works from here on.
-    trigger_init(voice_session_handle_wake_word, voice_session_handle_key_button);
+    // Load the wake word model and configure KEY and BOOT. Detection stays off
+    // until the session task applies the boot state below; the buttons work
+    // from here on. display_init() has already run, which the brightness
+    // callback needs.
+    trigger_init(voice_session_handle_wake_word, voice_session_handle_key_button, display_cycle_brightness);
 
     // lwIP is up as soon as esp_netif is, so the listener can exist before
     // Wi-Fi associates; nothing arrives until the interface has an address.

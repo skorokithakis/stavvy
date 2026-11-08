@@ -17,19 +17,27 @@
 static const char *TAG = "trigger";
 
 #define KEY_BUTTON_GPIO 10
+// BOOT sits in the row beside KEY. Holding it at reset enters the ROM's
+// download mode, which is a strapping-pin function of the chip, so nothing in
+// the firmware has to avoid it: a press while the firmware runs is free to use.
+#define BOOT_BUTTON_GPIO 9
 
-// The schematic puts a 10K pull-up (R18) on GPIO10 and the switch to ground,
-// so a press reads low. The 100 nF debounce capacitor is not fitted, which is
-// why the press has to be stable for a while before it is accepted.
-#define KEY_BUTTON_PRESSED_LEVEL 0
-#define KEY_BUTTON_DEBOUNCE_US (50 * 1000)
+// Both buttons pull their pin to ground when pressed. The schematic shows a
+// 10K pull-up (R8) and a 100 nF capacitor (C14) on BOOT, and a 10K pull-up
+// (R18) on KEY whose debounce capacitor (C22) is marked not fitted, so the
+// firmware debounces both. The internal pull-ups are enabled as well so the
+// pins are defined even before the rails are up.
+#define BUTTON_PRESSED_LEVEL 0
+#define BUTTON_DEBOUNCE_US (50 * 1000)
 
-// KEY is polled by its own task rather than from the detection loop: it has to
-// work while the wake word is muted and while a session owns the microphone,
-// which are exactly the times the detection task is not reading frames. 20 ms
+// The buttons are polled by their own task rather than from the detection loop:
+// KEY has to work while the wake word is muted and while a session owns the
+// microphone, which are exactly the times the detection task is not reading
+// frames. BOOT shares the task because its 50 ms debounce is the same, and
+// because the display call it makes has to stay out of the detection path. 20 ms
 // is short enough to see a press that is held for the 50 ms debounce, and the
 // task sleeps between polls.
-#define KEY_BUTTON_POLL_INTERVAL_MS 20
+#define BUTTON_POLL_INTERVAL_MS 20
 
 // The detection task is blocked on its wake semaphore whenever the trigger is
 // disabled, which can last for a whole reply. It has to wake at least once
@@ -56,7 +64,6 @@ static const char *TAG = "trigger";
 #define BUTTON_TASK_PRIORITY 5
 
 static trigger_callback_t trigger_callback;
-static trigger_button_callback_t button_callback;
 
 // One feature step of audio, which is the size the detector expects so that it
 // sees a steady stream of slices rather than a burst per read.
@@ -73,9 +80,25 @@ static SemaphoreHandle_t stopped_semaphore;
 static bool enabled_request;
 static bool capture_active;
 
-static bool key_button_raw_pressed;
-static bool key_button_stable_pressed;
-static int64_t key_button_raw_changed_at;
+// A button the task polls. Both buttons use the same active-low press edge and
+// the same debounce, so one poller serves both.
+typedef struct {
+    int gpio;
+    const char *name;
+    trigger_button_callback_t pressed_callback;
+    bool raw_pressed;
+    bool stable_pressed;
+    int64_t raw_changed_at;
+} polled_button_t;
+
+static polled_button_t key_button = {
+    .gpio = KEY_BUTTON_GPIO,
+    .name = "Key",
+};
+static polled_button_t boot_button = {
+    .gpio = BOOT_BUTTON_GPIO,
+    .name = "Boot",
+};
 
 static void lock_state(void)
 {
@@ -87,35 +110,36 @@ static void unlock_state(void)
     xSemaphoreGive(state_mutex);
 }
 
-static void reset_key_button_state(void)
+static void reset_button_state(polled_button_t *button)
 {
-    const bool pressed = gpio_get_level(KEY_BUTTON_GPIO) == KEY_BUTTON_PRESSED_LEVEL;
-    key_button_raw_pressed = pressed;
-    key_button_stable_pressed = pressed;
-    key_button_raw_changed_at = esp_timer_get_time();
+    const bool pressed = gpio_get_level(button->gpio) == BUTTON_PRESSED_LEVEL;
+    button->raw_pressed = pressed;
+    button->stable_pressed = pressed;
+    button->raw_changed_at = esp_timer_get_time();
 }
 
-static void poll_key_button(void)
+static void poll_button(polled_button_t *button)
 {
-    const bool raw_pressed = gpio_get_level(KEY_BUTTON_GPIO) == KEY_BUTTON_PRESSED_LEVEL;
+    const bool raw_pressed = gpio_get_level(button->gpio) == BUTTON_PRESSED_LEVEL;
     const int64_t now = esp_timer_get_time();
-    if (raw_pressed != key_button_raw_pressed) {
-        key_button_raw_pressed = raw_pressed;
-        key_button_raw_changed_at = now;
+    if (raw_pressed != button->raw_pressed) {
+        button->raw_pressed = raw_pressed;
+        button->raw_changed_at = now;
         return;
     }
-    if (raw_pressed == key_button_stable_pressed) {
+    if (raw_pressed == button->stable_pressed) {
         return;
     }
-    if (now - key_button_raw_changed_at < KEY_BUTTON_DEBOUNCE_US) {
+    if (now - button->raw_changed_at < BUTTON_DEBOUNCE_US) {
         return;
     }
-    key_button_stable_pressed = raw_pressed;
-    // Only the press edge counts; holding the button must not keep toggling
-    // mute, and the release edge is not a request to do anything.
-    if (key_button_stable_pressed) {
-        ESP_LOGI(TAG, "Key button pressed");
-        button_callback();
+    button->stable_pressed = raw_pressed;
+    // Only the press edge counts; holding a button must not keep toggling mute
+    // or cycling the brightness, and the release edge is not a request to do
+    // anything.
+    if (button->stable_pressed) {
+        ESP_LOGI(TAG, "%s button pressed", button->name);
+        button->pressed_callback();
     }
 }
 
@@ -232,28 +256,35 @@ static void button_task(void *argument)
     ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
     for (;;) {
         esp_task_wdt_reset();
-        poll_key_button();
-        vTaskDelay(pdMS_TO_TICKS(KEY_BUTTON_POLL_INTERVAL_MS));
+        poll_button(&key_button);
+        poll_button(&boot_button);
+        vTaskDelay(pdMS_TO_TICKS(BUTTON_POLL_INTERVAL_MS));
     }
 }
 
-void trigger_init(trigger_callback_t wake_word_callback, trigger_button_callback_t key_button_callback)
+void trigger_init(trigger_callback_t wake_word_callback, trigger_button_callback_t key_button_callback,
+                  trigger_button_callback_t boot_button_callback)
 {
-    ESP_ERROR_CHECK(wake_word_callback != NULL && key_button_callback != NULL ? ESP_OK : ESP_ERR_INVALID_ARG);
+    ESP_ERROR_CHECK(wake_word_callback != NULL && key_button_callback != NULL && boot_button_callback != NULL
+                        ? ESP_OK
+                        : ESP_ERR_INVALID_ARG);
     trigger_callback = wake_word_callback;
-    button_callback = key_button_callback;
+    key_button.pressed_callback = key_button_callback;
+    boot_button.pressed_callback = boot_button_callback;
 
     const gpio_config_t button_config = {
-        .pin_bit_mask = 1ULL << KEY_BUTTON_GPIO,
+        .pin_bit_mask = (1ULL << KEY_BUTTON_GPIO) | (1ULL << BOOT_BUTTON_GPIO),
         .mode = GPIO_MODE_INPUT,
-        // The board already has an external pull-up; the internal one is
-        // enabled as well so the pin is defined even before that rail is up.
+        // The board already has an external pull-up on each pin; the internal
+        // ones are enabled as well so the pins are defined even before that
+        // rail is up.
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
     ESP_ERROR_CHECK(gpio_config(&button_config));
-    reset_key_button_state();
+    reset_button_state(&key_button);
+    reset_button_state(&boot_button);
 
     ESP_LOGI(TAG, "Free heap before loading the wake word model: %u bytes",
              (unsigned)esp_get_free_heap_size());

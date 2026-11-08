@@ -31,6 +31,12 @@ void display_set_reply(const char *text);
 // Clears both text fields and returns the screen to idle.
 void display_clear(void);
 
+// Advances the full (non-dimmed) panel brightness to the next step in 40, 60,
+// 80, 100%, wrapping to 40, applies it at once and stores it in NVS. Idle and
+// muted restart their dim countdown; a session keeps it paused. Safe to call
+// from any task: it takes LVGL's lock and writes NVS outside it.
+void display_cycle_brightness(void);
+
 // The DCS 0x0A value read at boot, or -1 if the read failed. Used by the
 // diagnostics heartbeat. Register reads return 0xFF on this panel, so the
 // value is reported for diagnosis rather than used to drive a health check.

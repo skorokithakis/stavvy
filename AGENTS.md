@@ -39,7 +39,7 @@ Toolchain: ESP-IDF (C). Do not use Arduino, ESPHome or MicroPython. Waveshare's 
 | Battery | MX1.25 2-pin | 3.7 V lithium. |
 | Antenna | Onboard chip antenna | IPEX1 connector is available after you move an onboard resistor. |
 | USB | Type-C | Native ESP32-C6 USB (USB-Serial-JTAG) for flashing and logs. |
-| Buttons | BOOT, PWR, KEY | BOOT: hold at power-on for download mode. PWR: long press off, short press on (board powers on when power connects). KEY: user button. |
+| Buttons | BOOT, PWR, KEY | BOOT: steps the full brightness through 40, 60, 80 and 100%, and holding it at power-on enters download mode. PWR: long press off, short press on (board powers on when power connects). KEY: cycles the microphone mute. |
 | Expansion | Solder pads | 1× I2C, 1× UART, 1× USB. |
 
 ## Pin map
@@ -150,6 +150,14 @@ capacitor (C22) is marked not fitted, so the firmware debounces the press. KEY
 toggles the microphone mute; it is polled by its own task in `trigger.c` rather
 than by the detection loop, because it has to work while the microphone is
 muted and while a session owns the capture device.
+
+BOOT is on GPIO9 and is polled by that same task with the same 50 ms debounce.
+The schematic shows a 10K pull-up (R8) to 3.3 V and a 100 nF capacitor (C14) on
+the pin, with the switch to ground. A press advances the full panel brightness
+(see the display section), and the level is stored in NVS. GPIO9 is a strapping
+pin, so holding BOOT through a reset still enters the ROM's download mode;
+nothing in the firmware works around that, and a press while the firmware runs
+is unaffected.
 
 ## Drawn faces
 
@@ -330,9 +338,12 @@ its own runs on LVGL timers in the LVGL task, so there is no extra task:
 - Linger: 2.5 seconds after speaking with a reply and returning to idle or
   muted, the bubble, text and scrollbar clear and the full face returns. Error
   and no-server messages stay.
-- Dimming: after 30 seconds in idle or muted the panel goes from 60% to 25%.
-  Any state change restores 60% and restarts the countdown, and a session
-  pauses it.
+- Dimming: after 30 seconds in idle or muted the panel goes from the chosen
+  full level to 25%. BOOT steps the full level through 40, 60, 80 and 100%,
+  wrapping to 40, applies it at once even when dimmed, and writes it to NVS;
+  the default is 60%. A press restarts the countdown in idle or muted. Any
+  state change restores the full level and restarts the countdown, and a
+  session pauses it.
 
 LVGL's own heap is 24 KB (`CONFIG_LV_MEM_SIZE_KILOBYTES` in both
 `sdkconfig.defaults` and the existing `sdkconfig`, since the latter overrides
@@ -345,12 +356,13 @@ buffer is still allocated separately by esp_lvgl_port.
 The labels change only when their text changes, so LVGL invalidates just those
 areas and the scrolling label is clipped to its viewport. The one full-screen
 invalidation is the touch recovery, which also restores the brightness in
-effect (the init list resends 60%).
+effect (the init list resends the full level and the current level is applied
+again afterwards).
 
-A state change logs at info, as do drift steps, dimming and the start and end of
-a variety moment. Each face also logs the LVGL heap it leaves free and its peak
-use, once, a second after it appears. Blinks log at debug, which the default
-INFO log level compiles out.
+A state change logs at info, as do drift steps, brightness presses, dimming and
+the start and end of a variety moment. Each face also logs the LVGL heap it
+leaves free and its peak use, once, a second after it appears. Blinks log at
+debug, which the default INFO log level compiles out.
 
 
 ## Voice session

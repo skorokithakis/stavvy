@@ -7,18 +7,22 @@
 // that task to act, so calling either from the callback would deadlock.
 typedef void (*trigger_callback_t)(void);
 
-// Runs in the button task on the press edge of KEY. KEY is a plain button now:
-// it toggles the microphone mute, so it has to stay readable while wake word
-// detection is off (muted or during a session) and the microphone belongs to
-// someone else. Keep it short; do not start or stop detection from it.
+// Runs in the button task on the press edge of KEY or BOOT. KEY toggles the
+// microphone mute, so it has to stay readable while wake word detection is off
+// (muted or during a session) and the microphone belongs to someone else. BOOT
+// changes the display brightness. Keep it short; do not start or stop detection
+// from it.
 typedef void (*trigger_button_callback_t)(void);
 
-// Loads the wake word model, configures KEY and starts both the detection task
-// and the button task. Call once, after audio_init(). Detection stays off until
-// trigger_enable(); the button works from here on. The button task is started
-// last, after every mutex and the model exist, so an early press cannot reach
-// trigger_enable() or trigger_disable() before they are usable.
-void trigger_init(trigger_callback_t wake_word_callback, trigger_button_callback_t key_button_callback);
+// Loads the wake word model, configures KEY and BOOT and starts both the
+// detection task and the button task. Call once, after audio_init(); BOOT's
+// callback may touch the display, so it also has to come after display_init().
+// Detection stays off until trigger_enable(); the buttons work from here on.
+// The button task is started last, after every mutex and the model exist, so an
+// early press cannot reach trigger_enable() or trigger_disable() before they
+// are usable.
+void trigger_init(trigger_callback_t wake_word_callback, trigger_button_callback_t key_button_callback,
+                  trigger_button_callback_t boot_button_callback);
 
 // Asks the trigger task to start microphone capture and wake word detection.
 // Returns after the request is queued, not after capture has started. Only

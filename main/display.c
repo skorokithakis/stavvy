@@ -3,6 +3,7 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "driver/spi_master.h"
@@ -22,6 +23,7 @@
 #include "faces.h"
 #include "freertos/task.h"
 #include "lvgl.h"
+#include "nvs.h"
 #include "sdkconfig.h"
 
 static const char *TAG = "display";
@@ -60,12 +62,19 @@ LV_FONT_DECLARE(dm_sans_italic_18);
 #define DISPLAY_MAXIMUM_TRANSFER_BYTES (DISPLAY_BUFFER_PIXELS * sizeof(uint16_t))
 
 // The panel is an AMOLED with no backlight pin, so brightness is a command
-// rather than a PWM duty cycle. 60% is readable indoors without burning power
-// or shortening the panel's life like full brightness would.
-#define DISPLAY_BRIGHTNESS_FULL_PERCENT 60
+// rather than a PWM duty cycle. The user picks the full level with BOOT and it
+// is stored in NVS. 100% wears the panel faster, which is accepted because
+// the level is the user's choice. 60% is readable indoors and is what a board
+// with no stored level starts at, which is also why it sits in the middle of
+// the list rather than at an end.
+static const uint8_t full_brightness_steps[] = {40, 60, 80, 100};
+#define DISPLAY_BRIGHTNESS_STEP_COUNT (sizeof(full_brightness_steps) / sizeof(full_brightness_steps[0]))
+#define DISPLAY_BRIGHTNESS_DEFAULT_PERCENT 60
+#define DISPLAY_BRIGHTNESS_NVS_NAMESPACE "display"
+#define DISPLAY_BRIGHTNESS_NVS_KEY "brightness"
 // An idle face is mostly there to be glanced at, so a dim panel still shows the
-// expression while using less current. The jump back to 60% is also the
-// clearest "I am listening now" cue the screen has.
+// expression while using less current. The jump back to the full level is also
+// the clearest "I am listening now" cue the screen has.
 #define DISPLAY_BRIGHTNESS_DIM_PERCENT 25
 // How long an idle or muted screen stays at full brightness before dimming.
 #define DISPLAY_DIM_AFTER_MILLISECONDS (30 * 1000)
@@ -171,6 +180,12 @@ LV_FONT_DECLARE(dm_sans_italic_18);
 // often enough to react to a touch without delaying rendering.
 #define DISPLAY_RECOVERY_TIMER_PERIOD_MS 100
 
+// The 0x51 entry below points at this, so the init list brings the panel up at
+// the full level rather than a fixed 60%. display_init() fills it from NVS
+// before the panel is created, and a press updates it so a touch recovery that
+// resends the list also uses the level the user chose.
+static uint8_t panel_full_brightness_command;
+
 // The panel command set is SH8601-compatible, which is why Waveshare uses
 // esp_lcd_sh8601 for a CO5300 board. This list is their 09_LVGL_V9_Test list,
 // with two corrections for this panel's 480x480 geometry:
@@ -193,7 +208,7 @@ static const sh8601_lcd_init_cmd_t panel_init_commands[] = {
     {0x35, (uint8_t[]){0x00}, 1, 0},
     {0x36, (uint8_t[]){0x30}, 1, 0},
     {0x53, (uint8_t[]){0x20}, 1, 0},
-    {0x51, (uint8_t[]){DISPLAY_BRIGHTNESS_FULL_PERCENT * 255 / 100}, 1, 0},
+    {0x51, &panel_full_brightness_command, 1, 0},
     {0x63, (uint8_t[]){0xFF}, 1, 0},
     {0x2A, (uint8_t[]){0x00, 0x00, 0x01, 0xDF}, 4, 0},
     {0x2B, (uint8_t[]){0x00, 0x00, 0x01, 0xDF}, 4, 0},
@@ -288,9 +303,12 @@ static int16_t drift_y;
 static bool blink_showing;
 static uint32_t blink_started_milliseconds;
 static bool variety_showing;
+// The full level the user chose with BOOT. It is loaded from NVS before the
+// panel is created and only changes on a press.
+static uint8_t full_brightness_percent = DISPLAY_BRIGHTNESS_DEFAULT_PERCENT;
 // What the panel was last told. Kept so a touch recovery, which resends the
 // init list and its full-brightness command, can restore a dimmed panel.
-static uint8_t brightness_percent = DISPLAY_BRIGHTNESS_FULL_PERCENT;
+static uint8_t brightness_percent = DISPLAY_BRIGHTNESS_DEFAULT_PERCENT;
 
 // Kept so the boot power-mode read and the brightness write can use the same
 // io after panel creation.
@@ -414,6 +432,56 @@ static void set_brightness(uint8_t percent)
         return;
     }
     apply_brightness(percent);
+}
+
+// Returns the index of one of the steps, or SIZE_MAX when the value is not a
+// step. load_brightness() uses the miss to reject a stored value; anywhere else
+// a miss means this file passed a value it never produced, so it is a bug.
+static size_t brightness_step_index(uint8_t percent)
+{
+    for (size_t index = 0; index < DISPLAY_BRIGHTNESS_STEP_COUNT; index++) {
+        if (full_brightness_steps[index] == percent) {
+            return index;
+        }
+    }
+    return SIZE_MAX;
+}
+
+// Runs once at boot, before the panel is created, so the init list can bring it
+// up at the stored level in one command. nvs_flash_init() has already run in
+// main(), so a missing namespace is a first boot rather than an error.
+static void load_brightness(void)
+{
+    nvs_handle_t handle;
+    esp_err_t result = nvs_open(DISPLAY_BRIGHTNESS_NVS_NAMESPACE, NVS_READONLY, &handle);
+    if (result != ESP_OK) {
+        ESP_LOGI(TAG, "No stored brightness, using %d%%", full_brightness_percent);
+        return;
+    }
+
+    uint8_t stored = 0;
+    result = nvs_get_u8(handle, DISPLAY_BRIGHTNESS_NVS_KEY, &stored);
+    nvs_close(handle);
+    if (result != ESP_OK) {
+        ESP_LOGI(TAG, "No stored brightness, using %d%%", full_brightness_percent);
+        return;
+    }
+    const size_t index = brightness_step_index(stored);
+    if (index == SIZE_MAX) {
+        ESP_LOGW(TAG, "Stored brightness %u%% is not a step, using %d%%", stored, full_brightness_percent);
+        return;
+    }
+
+    full_brightness_percent = full_brightness_steps[index];
+}
+
+static void store_brightness(uint8_t percent)
+{
+    nvs_handle_t handle;
+    ESP_ERROR_CHECK(nvs_open(DISPLAY_BRIGHTNESS_NVS_NAMESPACE, NVS_READWRITE, &handle));
+    ESP_ERROR_CHECK(nvs_set_u8(handle, DISPLAY_BRIGHTNESS_NVS_KEY, percent));
+    ESP_ERROR_CHECK(nvs_commit(handle));
+    nvs_close(handle);
 }
 
 void display_request_recovery(void)
@@ -772,6 +840,39 @@ static void restart_dim_timer(void)
     lv_timer_set_period(dim_timer, DISPLAY_DIM_AFTER_MILLISECONDS);
     lv_timer_reset(dim_timer);
     lv_timer_resume(dim_timer);
+}
+
+void display_cycle_brightness(void)
+{
+    lvgl_port_lock(0);
+
+    const size_t current_index = brightness_step_index(full_brightness_percent);
+    if (current_index == SIZE_MAX) {
+        // load_brightness() rejects a stored value that is not a step, and the
+        // level only changes here, so an unknown value means a bug in this file.
+        abort();
+    }
+    const uint8_t next = full_brightness_steps[(current_index + 1) % DISPLAY_BRIGHTNESS_STEP_COUNT];
+    full_brightness_percent = next;
+    panel_full_brightness_command = next * 255 / 100;
+    // A press applies the new level at once, even when the screen is dimmed.
+    // Making the first press only wake the screen would hide the level the
+    // user is trying to see.
+    set_brightness(next);
+    // Idle and muted are the only states whose countdown runs, so only those
+    // restart it; during a session it stays paused and the new level holds
+    // until the state change restores it.
+    if (current_state == DISPLAY_STATE_IDLE || current_state == DISPLAY_STATE_MUTED) {
+        restart_dim_timer();
+    }
+    ESP_LOGI(TAG, "Full brightness now %d%%", next);
+
+    lvgl_port_unlock();
+
+    // The flash erase can take tens of milliseconds, which would stall the
+    // face animation if it ran under the port's lock. The level is already in
+    // effect, so a failed write only means the next boot starts at the old one.
+    store_brightness(next);
 }
 
 static void dim_timer_callback(lv_timer_t *timer)
@@ -1337,6 +1438,12 @@ static void create_face_screen(void)
 
 void display_init(void)
 {
+    load_brightness();
+    // The init list's 0x51 entry points here, so the panel comes up at the
+    // stored level instead of flashing the 60% default before the first
+    // brightness command.
+    panel_full_brightness_command = full_brightness_percent * 255 / 100;
+
     initialise_spi_bus();
     display_io = initialise_panel_io();
     display_panel = initialise_panel(display_io);
@@ -1344,7 +1451,7 @@ void display_init(void)
     // The init list already writes brightness, but sending it here from the
     // configured percentage keeps the value in one place that any recovery
     // path can reuse, at the cost of one extra command at boot.
-    apply_brightness(DISPLAY_BRIGHTNESS_FULL_PERCENT);
+    apply_brightness(full_brightness_percent);
 
     // The read returns 0xFF on this panel, which is the idle level of SIO0
     // rather than a power-mode value. It is logged and kept for the heartbeat
@@ -1431,7 +1538,7 @@ void display_init(void)
     ESP_ERROR_CHECK(esp_task_wdt_add(lvgl_task));
 
     ESP_LOGI(TAG, "CO5300 panel ready, %d x %d, brightness %d%%, LVGL heap %d KB",
-             DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_BRIGHTNESS_FULL_PERCENT, CONFIG_LV_MEM_SIZE_KILOBYTES);
+             DISPLAY_WIDTH, DISPLAY_HEIGHT, full_brightness_percent, CONFIG_LV_MEM_SIZE_KILOBYTES);
     ESP_LOGI(TAG, "LVGL heap after creating the screen: %u of %u bytes used, %u bytes free",
              (unsigned)(lvgl_memory.total_size - lvgl_memory.free_size),
              (unsigned)lvgl_memory.total_size, (unsigned)lvgl_memory.free_size);
@@ -1486,7 +1593,7 @@ void display_set_state(display_state_t state)
         // readable. Only the idle and muted screens then run the dim countdown;
         // the others pause it, so an idle screen cannot dim under a session or
         // an error message.
-        set_brightness(DISPLAY_BRIGHTNESS_FULL_PERCENT);
+        set_brightness(full_brightness_percent);
         if (state == DISPLAY_STATE_IDLE || state == DISPLAY_STATE_MUTED) {
             restart_dim_timer();
         } else {
