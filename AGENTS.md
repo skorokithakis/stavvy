@@ -351,6 +351,18 @@ its own runs on LVGL timers in the LVGL task, so there is no extra task:
   the default is 60%. A press restarts the countdown in idle or muted. Any
   state change restores the full level and restarts the countdown, and a
   session pauses it.
+- Motion: picking the board up in idle or muted replaces the state's face with
+  the surprised face, at the full brightness and with the dim countdown
+  paused. A blink or variety moment is dropped. Putting it down shows the
+  relieved face for 4 s, then the state's face returns and the countdown
+  restarts; moving again during those 4 s returns to surprised. No blink or
+  variety moment runs during the override, and drift applies as on any
+  full-size face. Any state change ends it and shows the new state's face, and
+  a session's conversation linger ignores it as if the session were still
+  running. The last motion report is kept even when it cannot be shown, so
+  becoming idle or muted while the board is already moving starts with the
+  surprised face and a put-down during a session is not drawn as relieved
+  afterwards.
 
 LVGL's own heap is 24 KB (`CONFIG_LV_MEM_SIZE_KILOBYTES` in both
 `sdkconfig.defaults` and the existing `sdkconfig`, since the latter overrides
@@ -367,9 +379,33 @@ effect (the init list resends the full level and the current level is applied
 again afterwards).
 
 A state change logs at info, as do drift steps, brightness presses, dimming and
-the start and end of a variety moment. Each face also logs the LVGL heap it
-leaves free and its peak use, once, a second after it appears. Blinks log at
-debug, which the default INFO log level compiles out.
+the start and end of a variety moment and of the motion override. Each face also
+logs the LVGL heap it leaves free and its peak use, once, a second after it
+appears. Blinks log at debug, which the default INFO log level compiles out.
+
+
+## Motion
+
+`main/motion.c` owns the QMI8658 on the I2C bus `board_i2c_init()` creates. It
+polls at 40 Hz and calls its callback, from the motion task, only on a
+transition: moving after 200 ms above the thresholds, still after a second
+below them. Those hold times are what separate a pick-up from a screen tap or a
+knock on the desk. The moving thresholds are 0.5 rad/s of rotation and 0.15 g
+of deviation from the resting acceleration magnitude measured at boot; the
+still ones are 0.25 rad/s and 0.06 g. The still thresholds sit lower than the
+moving ones so a movement that ends slowly does not oscillate, and the
+gyroscope's initial offset may be up to ±10 dps (0.17 rad/s), so the still
+rotation threshold has to stay above the board's measured 0.07 rad/s of
+resting noise rather than just above it. The resting magnitude is averaged
+over 20 samples at boot, so picking the board up during boot makes the
+reference wrong until the next reboot.
+
+Movement start and stop log at info with the peak rotation and acceleration
+deviation seen, which is what the thresholds should be tuned against. If the
+IMU does not answer at 0x6B or reports an unexpected identity, `motion_init()`
+logs an error and starts no task, so the callback never fires and the rest of
+the firmware runs as before. The callback must not block; that is why
+`display_set_moving()` only takes LVGL's lock and updates state.
 
 
 ## Voice session

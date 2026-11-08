@@ -172,6 +172,11 @@ static void motion_task(void *argument)
                 ESP_LOGW(TAG, "QMI8658 read failed (0x%x)", read_result);
             }
             last_read_ok = false;
+            // The hold times are wall-clock, so a candidate that spans a run of
+            // failed reads would count time with no samples behind it and could
+            // report a movement or a put-down that was never observed.
+            movement_candidate = false;
+            still_candidate = false;
             continue;
         }
         if (!last_read_ok) {

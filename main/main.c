@@ -22,6 +22,7 @@
 #include "display.h"
 #include "esphome_api.h"
 #include "mdns_service.h"
+#include "motion.h"
 #include "player.h"
 #include "touch.h"
 #include "trigger.h"
@@ -164,6 +165,13 @@ static void handle_network_connected(void *handler_argument, esp_event_base_t ev
     }
 }
 
+// Runs in the motion task. display_set_moving() only takes LVGL's lock and
+// changes state, so it never blocks on the session or the audio path.
+static void handle_motion(bool moving)
+{
+    display_set_moving(moving);
+}
+
 void app_main(void)
 {
     // Read before anything else can reset or overwrite the reason. Logging the
@@ -188,6 +196,11 @@ void app_main(void)
     // The AMOLED is powered from ALDO3, so it needs the PMIC. This also creates
     // the SPI2 bus it shares with the SD card.
     display_init();
+    // After the display, because the callback draws on it, and after the PMIC,
+    // which leaves the 3.3 V rail the IMU runs from on. It blocks for about
+    // half a second while it measures the board's resting acceleration, so the
+    // board must be still here.
+    motion_init(handle_motion);
     // Touch comes after the display because a touch asks the display module to
     // re-initialise the panel.
     touch_init();

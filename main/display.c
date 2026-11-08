@@ -99,6 +99,11 @@ static const uint8_t full_brightness_steps[] = {40, 60, 80, 100};
 #define DISPLAY_VARIETY_MINIMUM_DURATION_MILLISECONDS (3 * 1000)
 #define DISPLAY_VARIETY_MAXIMUM_DURATION_MILLISECONDS (5 * 1000)
 
+// The relieved face acknowledges a put-down and then hands back to the
+// state's own face. A fixed length rather than a random one: it is a reaction
+// to something the user just did, not an idle variety moment.
+#define DISPLAY_MOTION_RELIEVED_MILLISECONDS (4 * 1000)
+
 // Drift moves the face a few pixels every few minutes, so it is not pinned to
 // the same pixel for hours. 20 px is about 4% of the screen: enough to feel
 // alive, small enough that the face never looks misplaced.
@@ -282,6 +287,7 @@ static lv_timer_t *blink_timer;
 static lv_timer_t *variety_timer;
 static lv_timer_t *drift_timer;
 static lv_timer_t *dim_timer;
+static lv_timer_t *motion_relieved_timer;
 
 static display_state_t current_state = DISPLAY_STATE_IDLE;
 // The face being drawn now. The shapes are rebuilt from this face and the
@@ -303,6 +309,13 @@ static int16_t drift_y;
 static bool blink_showing;
 static uint32_t blink_started_milliseconds;
 static bool variety_showing;
+// The motion override draws the surprised and relieved faces above the state's
+// own, like a variety moment, but only in idle and muted. The last report is
+// kept even while the override cannot be shown, so becoming idle or muted
+// while already moving starts with the surprised face.
+static bool motion_moving;
+static bool motion_override_active;
+static bool motion_override_relieved;
 // The full level the user chose with BOOT. It is loaded from NVS before the
 // panel is created and only changes on a press.
 static uint8_t full_brightness_percent = DISPLAY_BRIGHTNESS_DEFAULT_PERCENT;
@@ -449,23 +462,26 @@ static size_t brightness_step_index(uint8_t percent)
 
 // Runs once at boot, before the panel is created, so the init list can bring it
 // up at the stored level in one command. nvs_flash_init() has already run in
-// main(), so a missing namespace is a first boot rather than an error.
+// main(), so a missing namespace or key is a first boot rather than an error;
+// any other NVS failure means the partition is broken and aborts the boot.
 static void load_brightness(void)
 {
     nvs_handle_t handle;
     esp_err_t result = nvs_open(DISPLAY_BRIGHTNESS_NVS_NAMESPACE, NVS_READONLY, &handle);
-    if (result != ESP_OK) {
+    if (result == ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGI(TAG, "No stored brightness, using %d%%", full_brightness_percent);
         return;
     }
+    ESP_ERROR_CHECK(result);
 
     uint8_t stored = 0;
     result = nvs_get_u8(handle, DISPLAY_BRIGHTNESS_NVS_KEY, &stored);
     nvs_close(handle);
-    if (result != ESP_OK) {
+    if (result == ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGI(TAG, "No stored brightness, using %d%%", full_brightness_percent);
         return;
     }
+    ESP_ERROR_CHECK(result);
     const size_t index = brightness_step_index(stored);
     if (index == SIZE_MAX) {
         ESP_LOGW(TAG, "Stored brightness %u%% is not a step, using %d%%", stored, full_brightness_percent);
@@ -863,8 +879,9 @@ void display_cycle_brightness(void)
     set_brightness(next);
     // Idle and muted are the only states whose countdown runs, so only those
     // restart it; during a session it stays paused and the new level holds
-    // until the state change restores it.
-    if (current_state == DISPLAY_STATE_IDLE || current_state == DISPLAY_STATE_MUTED) {
+    // until the state change restores it. A motion override keeps it paused as
+    // well, so the surprised face is not dimmed while the board is held.
+    if (!motion_override_active && (current_state == DISPLAY_STATE_IDLE || current_state == DISPLAY_STATE_MUTED)) {
         restart_dim_timer();
     }
     ESP_LOGI(TAG, "Full brightness now %d%%", next);
@@ -905,10 +922,10 @@ static void reset_expression_timers(void)
 static bool blinking_allowed(void)
 {
     // Blinking belongs to a resting expression: idle or muted. A variety
-    // moment has its own face and motion, and a session has its own expression,
-    // so a blink there would fight it.
+    // moment has its own face and motion, a motion override does too, and a
+    // session has its own expression, so a blink there would fight it.
     return (current_state == DISPLAY_STATE_IDLE || current_state == DISPLAY_STATE_MUTED) && !variety_showing &&
-           (current_face == FACE_IDLE_DEFAULT || current_face == FACE_MUTED);
+           !motion_override_active && (current_face == FACE_IDLE_DEFAULT || current_face == FACE_MUTED);
 }
 
 static void blink_timer_callback(lv_timer_t *timer)
@@ -946,8 +963,9 @@ static void variety_timer_callback(lv_timer_t *timer)
 
     // Only the idle face has spare expressions. In every other state the timer
     // keeps counting down so the next idle period still starts with a fresh
-    // interval.
-    if (current_state != DISPLAY_STATE_IDLE) {
+    // interval. The same applies while the motion override owns the face, which
+    // can last far longer than a variety interval.
+    if (current_state != DISPLAY_STATE_IDLE || motion_override_active) {
         variety_showing = false;
         lv_timer_set_period(timer, waiting_period);
         return;
@@ -974,6 +992,68 @@ static void variety_timer_callback(lv_timer_t *timer)
                                                    DISPLAY_VARIETY_MAXIMUM_DURATION_MILLISECONDS);
     lv_timer_set_period(timer, showing_period);
     ESP_LOGI(TAG, "Variety: showing the %s face", face == FACE_IDLE_CURIOUS ? "curious" : "happy eyes");
+}
+
+// The override belongs to a resting screen. The conversation linger is a
+// session still on screen, so motion is ignored until it ends rather than
+// mixing a full-size face with the bubble.
+static bool motion_override_allowed(void)
+{
+    return (current_state == DISPLAY_STATE_IDLE || current_state == DISPLAY_STATE_MUTED) && !conversation_lingering;
+}
+
+// Ends the override without drawing a face: the caller either shows one of its
+// own (a state change) or the state's face and restarts the dim countdown. It
+// returns whether an override was on screen, for the log line.
+static bool clear_motion_override(void)
+{
+    if (!motion_override_active) {
+        return false;
+    }
+    motion_override_active = false;
+    motion_override_relieved = false;
+    lv_timer_pause(motion_relieved_timer);
+    return true;
+}
+
+// Draws the surprised face over the state's own and holds the screen at full
+// brightness. A blink or variety moment is dropped rather than resumed later:
+// both have their own expression and would fight the override.
+static void start_motion_override(void)
+{
+    motion_override_active = true;
+    motion_override_relieved = false;
+    lv_timer_pause(motion_relieved_timer);
+    reset_expression_timers();
+    set_brightness(full_brightness_percent);
+    lv_timer_pause(dim_timer);
+    show_face(FACE_SURPRISED);
+    ESP_LOGI(TAG, "Motion: moving, showing the surprised face");
+}
+
+// Still after moving: the relieved face for a fixed moment. Another movement
+// returns to surprised at once and stops this timer.
+static void show_motion_relieved(void)
+{
+    motion_override_relieved = true;
+    show_face(FACE_RELIEVED);
+    lv_timer_reset(motion_relieved_timer);
+    lv_timer_resume(motion_relieved_timer);
+    ESP_LOGI(TAG, "Motion: still, showing the relieved face");
+}
+
+static void motion_relieved_timer_callback(lv_timer_t *timer)
+{
+    lv_timer_pause(timer);
+    // A state change always clears and pauses this timer, so the override is
+    // still on screen and the state is still idle or muted here.
+    if (!motion_override_active || !motion_override_relieved) {
+        return;
+    }
+    clear_motion_override();
+    show_face(state_face[current_state]);
+    restart_dim_timer();
+    ESP_LOGI(TAG, "Motion: back to the %s face", state_name[current_state]);
 }
 
 static void drift_timer_callback(lv_timer_t *timer)
@@ -1307,6 +1387,12 @@ static void text_clear_timer_callback(lv_timer_t *timer)
     conversation_show(false);
     reply_text[0] = '\0';
     show_face(state_face[current_state]);
+    // The linger is over, so motion applies again. A still report during it
+    // leaves the state's face alone, which is what "ignore it until the linger
+    // ends" means for a put-down.
+    if (motion_moving) {
+        start_motion_override();
+    }
 }
 
 // The conversation screen and the errors share the reply buffer. The bottom
@@ -1524,6 +1610,9 @@ void display_init(void)
                                                  DISPLAY_DRIFT_MAXIMUM_INTERVAL_MILLISECONDS),
                                   NULL);
     dim_timer = lv_timer_create(dim_timer_callback, DISPLAY_DIM_AFTER_MILLISECONDS, NULL);
+    motion_relieved_timer =
+        lv_timer_create(motion_relieved_timer_callback, DISPLAY_MOTION_RELIEVED_MILLISECONDS, NULL);
+    lv_timer_pause(motion_relieved_timer);
     text_clear_timer = lv_timer_create(text_clear_timer_callback, DISPLAY_TEXT_CLEAR_AFTER_MILLISECONDS, NULL);
     lv_timer_pause(text_clear_timer);
     // The board boots into the idle screen, so its dim countdown starts now.
@@ -1603,6 +1692,12 @@ void display_set_state(display_state_t state)
         }
 
         reset_expression_timers();
+        // The override belongs to the state that was on screen; every new state
+        // shows its own face. The report is kept, so entering idle or muted
+        // while still moving starts with the surprised face below.
+        if (clear_motion_override()) {
+            ESP_LOGI(TAG, "Motion: override ended by the state change");
+        }
         // The linger re-enables it below; every other transition stops it.
         lv_timer_pause(text_clear_timer);
 
@@ -1660,6 +1755,12 @@ void display_set_state(display_state_t state)
                 conversation_show(false);
                 reply_text[0] = '\0';
                 show_face(state_face[state]);
+                // The board may have been picked up during a session or a
+                // variety moment, in which case the surprised face is right
+                // even though this transition did not cause the movement.
+                if (motion_moving) {
+                    start_motion_override();
+                }
             }
             break;
 
@@ -1740,4 +1841,29 @@ void display_clear(void)
     display_set_transcript("");
     display_set_reply("");
     display_set_state(DISPLAY_STATE_IDLE);
+}
+
+void display_set_moving(bool moving)
+{
+    lvgl_port_lock(0);
+
+    // The report is recorded even when it cannot be shown, so a screen that
+    // becomes idle or muted while the board is already moving starts with the
+    // surprised face. It also means a put-down during a session is already
+    // "still" by the time the session ends, so it is not drawn as relieved.
+    motion_moving = moving;
+
+    if (motion_override_allowed()) {
+        if (moving) {
+            // A repeated "moving" while surprised must not restart the face's
+            // animation; moving again after the relieved face must.
+            if (!motion_override_active || motion_override_relieved) {
+                start_motion_override();
+            }
+        } else if (motion_override_active && !motion_override_relieved) {
+            show_motion_relieved();
+        }
+    }
+
+    lvgl_port_unlock();
 }

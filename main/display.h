@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdbool.h>
+
 // The assistant state the face screen shows. The names match the states the
 // session layer reports, so the mapping is obvious.
 typedef enum {
@@ -27,6 +29,14 @@ void display_init(void);
 void display_set_state(display_state_t state);
 void display_set_transcript(const char *text);
 void display_set_reply(const char *text);
+
+// Shows the surprised face while the board is moving and the relieved face for
+// four seconds after it stops, in idle and muted only. Safe to call from any
+// task: it takes LVGL's lock and only updates state. The last report is kept,
+// so a screen that becomes idle or muted while the board is already moving
+// starts with the surprised face, and a put-down that happened during a
+// session is not drawn as relieved when the session ends.
+void display_set_moving(bool moving);
 
 // Clears both text fields and returns the screen to idle.
 void display_clear(void);
