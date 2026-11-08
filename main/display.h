@@ -20,9 +20,10 @@ typedef enum {
 // ready for another device to be added later.
 void display_init(void);
 
-// Every setter takes LVGL's lock, so it may be called from any task. The text
-// is copied into LVGL's own buffers; the caller's string does not need to stay
-// alive after the call. Setting the same state again is a no-op.
+// Every setter takes LVGL's lock, so it may be called from any task. The reply
+// and transcript are copied into static buffers; the caller's strings do not
+// need to stay alive after the calls. The transcript is shown only in the
+// conversation screen. Setting the same state again is a no-op.
 void display_set_state(display_state_t state);
 void display_set_transcript(const char *text);
 void display_set_reply(const char *text);

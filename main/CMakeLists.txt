@@ -8,7 +8,9 @@ idf_component_register(
         "display.c"
         "esphome_api.c"
         "faces.c"
-        "faces_generated.c"
+        "fonts/dm_sans_semibold_26.c"
+        "fonts/dm_sans_italic_24.c"
+        "fonts/dm_sans_italic_18.c"
         "proto/esphome_api.pb.c"
         "wifi_station.c"
         "mdns_service.c"
@@ -18,18 +20,7 @@ idf_component_register(
         "voice_session.c"
         "wake_word.cpp"
     INCLUDE_DIRS "." "proto"
-    # The face images are LVGL RGB565A8 data, which LVGL draws directly from
-    # flash. Embedding them avoids a PNG decoder and the frame-sized buffer
-    # that decoding would need on a chip without PSRAM.
     EMBED_FILES
-        "faces/idle_default.bin"
-        "faces/listening.bin"
-        "faces/thinking.bin"
-        "faces/speaking.bin"
-        "faces/muted.bin"
-        "faces/blink.bin"
-        "faces/idle_happy_eyes.bin"
-        "faces/idle_curious.bin"
         # The microWakeWord model is read in place by TFLite Micro, so it is
         # mapped from flash and never copied into the tightly constrained heap.
         "wake_word/stavrobot.tflite"

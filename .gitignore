@@ -3,6 +3,6 @@ sdkconfig
 sdkconfig.old
 managed_components/
 .tickets/
-# The face images the user generated live here; the eight the firmware uses are
-# copied into assets/faces/.
+# The face images the user generated earlier live here. The firmware no longer
+# uses them: the faces are drawn by code in main/faces.c.
 assistant_faces_alpha_480/

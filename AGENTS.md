@@ -151,66 +151,203 @@ toggles the microphone mute; it is polled by its own task in `trigger.c` rather
 than by the detection loop, because it has to work while the microphone is
 muted and while a session owns the capture device.
 
-## Face images
+## Drawn faces
 
-The eight face images are committed as `assets/faces/*.png`, copied from the
-user's `assistant_faces_alpha_480/` folder, which is git-ignored. The firmware
-does not decode PNG: it draws LVGL RGB565A8 data straight from flash, so the
-PNGs are converted ahead of time into `main/faces/*.bin` by
+The faces are not images. `main/faces.c` builds a list of drawing primitives
+for one face and `main/display.c` paints it with LVGL's `lv_draw_rect`,
+`lv_draw_arc` and `lv_draw_line` from the face object's `LV_EVENT_DRAW_MAIN`
+callback. Nothing is decoded and no pixel data is embedded, which makes the
+application about 1 MB smaller than the old RGB565A8 face images did.
 
-```sh
-./assets/faces/generate_faces.py
-```
+`faces_build(face, elapsed_ms, context, shapes)` fills a caller-provided array
+of at most `FACE_MAX_SHAPES` and returns its length. It is pure: it has no LVGL
+state, and the same arguments always produce the same shapes. `elapsed_ms` is
+the time since the face appeared, so every animation starts from its first
+keyframe when the face changes. The context carries the blink time and the
+conversation geometry: the reply bubble height, the wrapped reply height, the
+scroll offset and the user transcript bubble's size. The full-size faces ignore
+the conversation fields. Display code adds drift when it draws, so the list
+itself does not depend on where the face currently sits.
 
-The script needs only `uv`; PEP 723 metadata installs Pillow. It crops each
-face to its visible pixels (alpha at least 8 of 255) plus a 6 px glow margin,
-writes the RGB565 plane followed by the A8 plane, and regenerates
-`main/faces_generated.h` and `main/faces_generated.c`. Those generated files
-are committed. The crop is rounded to even coordinates because LVGL's RGB565A8
-drawing assumes the alpha plane's stride is half the RGB565 plane's stride,
-which only holds for an even width. The RGB565 values are in host
-(little-endian) order; `display.c` swaps bytes only when it flushes the draw
-buffer, so pre-swapping the files would turn the colours around.
+LVGL 9.5 has no ellipse or Bezier primitive, so the design is approximated:
 
-`main/faces.h` defines `face_id_t`, and `faces_get()` returns the image
-descriptor plus the crop's `x` and `y` in the 480x480 frame. The `.bin` files
-are in `EMBED_FILES`, so they are const in flash and drawing one allocates
-nothing beyond LVGL's existing draw buffer. Adding a face means adding the PNG,
-its name in the script and a `face_id_t` value; the generated table uses the
-enumerator derived from the name, so a mismatch fails to compile.
+- An SVG ellipse becomes a pill of the same bounding box.
+- A quadratic curve `M x0 y0 Q cx cy x1 y1` becomes the circular arc through
+  `(x0,y0)`, the curve's midpoint `((x0+2cx+x1)/4, (y0+2cy+y1)/4)` and `(x1,y1)`.
+  The stroke width and round ends stay the same. `faces.c` keeps the original
+  control points in the face definitions; `add_quadratic_arc()` converts them.
+- A group opacity is mixed into the colour in advance against the black
+  background, because overlapping translucent strokes would brighten at their
+  crossings. The listening waves and the thinking dots keep a per-shape
+  opacity, because they animate it.
+- The listening tilt moves the centre of each eye and mouth the way a rotation
+  about (240,240) would, and leaves the shapes upright. A real rotation would
+  need an off-screen layer that does not fit in RAM.
+
+`FACE_IDLE_DEFAULT` is the pill-eyed face with a 5 s breathe. `FACE_LISTENING`
+adds the 3 s tilt and six fading waves. `FACE_SPEAKING` has bobbing eyes and
+five talk bars. `FACE_MUTED` has dimmed eyes, a zipper and a crossed-out
+microphone. `FACE_IDLE_HAPPY_EYES` is the pink cheeks and arcs, and
+`FACE_IDLE_CURIOUS` is the big whites with the shifting look group. The
+conversation faces add both chat bubbles (the filled robot bubble and the
+outlined user transcript bubble), the thinking dots, the scrollbar and the mini
+faces. The geometry, colours and keyframes are in the design sections of the
+`amo-wvlew`, `amo-ndndv` and `amo-zxkxh` tickets, which follow the user's "Cute
+robot faces.html" design.
 
 ## Face screen
 
-`main/display.c` draws one face image on a black background and keeps the
-transcript (one line) and reply (two lines) in the bottom 84 px, in Montserrat 20. The state word line is gone: idle
-shows `idle_default`, listening/thinking/speaking show their faces at full
-brightness, muted shows the muted face, and error and no server show the idle
-face with the message in the reply line. The text starts at row 396 because the
-lowest crop (muted) reaches row 375 and drift can add 20 px; a boot-time check
-logs an error if a future crop breaks that.
+`main/display.c` draws one face on a black background. The state word line is
+gone. `voice_session` logs the transcript and passes it to
+`display_set_transcript()` at STT_END; it is shown only in the conversation
+screen, where it sits in the user bubble. The full-size layouts show neither
+the transcript nor the conversation bubbles.
 
-Everything that changes on its own is an LVGL timer in the LVGL task, so there
-is no extra task:
+Which screen each state uses:
 
-- Blink: `blink` for 150 ms every 3 to 7 seconds, idle only.
+- Thinking: C1, a small bubble with three bouncing dots and the mini thinking
+  face. When the transcript arrives, the user bubble appears above it and the
+  dots bubble moves down.
+- Speaking with reply text: C2, a chat bubble with the scrolling reply, a
+  scrollbar and the mini speaking face, with the user transcript bubble above
+  it when the transcript is non-empty.
+- Speaking without text (shortcuts and error sounds): the full-size speaking
+  face.
+- Idle, listening, muted, error and no server: the full-size faces, as in
+  `amo-wvlew`. Error and no server show their message in the bottom line.
+- After speaking: the C2 bubble and the user bubble stay for 2.5 s with the
+  mini idle face, at the final scroll position. Then the full-size face of the
+  current state returns and both texts clear. An error switches to the full
+  layout immediately, and any state change during the linger (a new wake word,
+  for example) ends it.
+- The full-size layouts never show the transcript. Empty transcripts produce
+  no user bubble, so the layout is exactly the pre-transcript one.
+
+The bottom message line starts at row 396 and is 84 px of Montserrat 20. It is
+the space the transcript used to occupy and is only shown for error and no
+server. The lowest full-size shape is the speaking bars, which end at row 356,
+and 20 px of drift takes that to 376, so the message never covers the face.
+
+The conversation screen:
+
+- The bubble starts at x28 y28, is 424 px wide, and its height is the wrapped
+  reply height plus 52 px, capped at 262 px. The corners are radius 24 except
+  for a radius-6 bottom-left corner. C1 uses a fixed 120x60 bubble.
+- The reply is an LVGL label inside a clipping viewport at x50..422, from y34
+  to 6 px above the bubble's bottom. The viewport is bubble height minus 12.
+  The label starts 20 px below the viewport top at scroll 0 and is positioned
+  every 33 ms from the same scroll offset as the face's scrollbar thumb.
+- The label text is static, in `reply_text` in `display.c`, and set with
+  `lv_label_set_text_static()`, so the reply is never copied into LVGL's heap.
+  It uses DM Sans SemiBold 26, 4 bpp, line height 34 and colour #DCDCFF.
+- Two 28 px gradient widgets fade the text into the bubble at the viewport's
+  top and bottom edges. The gradient stops carry their own opacity, which the
+  simple vertical gradient path supports without complex-gradient support.
+- The scroll holds for 1.5 s after speaking starts, then moves at 16 px/s to
+  the end and stops. The thumb's height is
+  `track height * viewport height / (text height + 40)` and it moves over the
+  scroll distance. Both track and thumb are drawn by `faces.c`; there is no
+  scrollbar when the text fits.
+- C1's dots are radius-6 circles at (70,60), (88,60) and (106,60) in #8A38F5,
+  with a 1.2 s bounce and opacity cycle and delays of 0, 0.2 and 0.4 s. Its mini
+  face is two pills, a brow line and a mouth line, with the eyes shifting as a
+  group. C2's mini face is two pills and three bars; the linger's mini face is
+  two pill eyes only.
+
+The user transcript bubble:
+
+- It is outline only: a 2 px #3A3456 border, no fill, text in #9A98C0, with a
+  6 px tail at the bottom right. The width is the natural text width plus
+  padding and border, capped at 340, and the right edge is at x452. An empty
+  transcript means no bubble at all.
+- C1 uses DM Sans Italic 24 (line height 32), 20x14 padding and radius 22. The
+  text wraps to at most three lines and ends in an ellipsis. Its width is the
+  natural text width plus 44 px, capped at 340, and the height is the used
+  lines times 32 plus 32. The dots bubble moves to y = 28 + user height + 14.
+- C2 and the linger use DM Sans Italic 18, one line with an ellipsis, 16x8
+  padding, radius 18 and a fixed 44 px height. The reply bubble moves from y28
+  to y84, and the reply viewport, fades and scrollbar move down by 56 px. The
+  one-line label is 24 px high; the generated font's line height is 22, so the
+  extra two pixels are the design's line box.
+- The tail cannot use the filled-square trick because the bubble has no fill.
+  The big bottom-right corner is erased with a black square, then a 12x12
+  border-only rounded rectangle with only its bottom and right sides and a
+  6 px radius forms the tail. Two more black squares erase the two corners that
+  side selection still draws, and two filled straight edges rejoin the tail to
+  the remaining big outline. It uses only rectangles, no arcs.
+- The transcript is an LVGL label on top of the face's outline, static in
+  `transcript_text` in `display.c` and set with `lv_label_set_text_static()`,
+  so it is never copied into LVGL's heap. It is hidden in every full-size
+  layout and cleared when the linger ends or a new session starts.
+- LVGL's dots long mode refuses static text, so the shown text is built in a
+  second static buffer: the longest UTF-8-safe prefix, preferably cut at a
+  nearby space, plus U+2026. A binary search with `lv_text_get_size()` at the
+  label's font and width finds the longest prefix that fits three lines in C1
+  or one line in C2. It is recomputed whenever the layout changes between C1
+  and C2. C1 uses WRAP and C2 uses CLIP, not DOTS.
+
+The fonts are generated by `main/fonts/regenerate_font.sh` from the static
+`DMSans-SemiBold.ttf` and `DMSans-Italic.ttf` at
+`https://raw.githubusercontent.com/googlefonts/dm-fonts/4412393b7d2de9fe7a92064c2dce9b5af5d7fd26/Sans/fonts/ttf/`
+with `lv_font_conv` 1.5.3, 4 bpp, and the ranges 0x20-0x7E, 0xA0-0xFF,
+U+2013-2014, U+2018-2019, U+201C-201D and U+2026. The generated
+`dm_sans_semibold_26.c`, `dm_sans_italic_24.c`, `dm_sans_italic_18.c` and the
+OFL 1.1 text in `main/fonts/OFL.txt` are committed.
+
+The face is one unstyled `lv_obj` covering the 480x480 screen and created
+before the labels, so the text is drawn above it. Everything that changes on
+its own runs on LVGL timers in the LVGL task, so there is no extra task:
+
+- Animation: every 33 ms it rebuilds the current shape list and compares it
+  with the previous one. A face that does not move after rounding causes no
+  repaint. The faces that contain arcs (idle, listening, muted, happy eyes and
+  curious) merge all changed shapes into one invalidation box: LVGL redraws the
+  face once per invalidated area, and every arc re-initialises its circle
+  masks, so splitting them into many small areas multiplies that work. An arc
+  invalidates its whole circle rather than a band because LVGL's software arc
+  renderer can spin forever in `draw_buf_flush()` when a large arc is clipped
+  to a band; the listening waves (radius about 160 px) reproduced a watchdog
+  reset that way. The speaking and conversation faces contain no arcs and
+  invalidate each changed shape separately, so a moving scrollbar does not
+  repaint the mini face and the mini face does not repaint the scrollbar. A
+  face change, a drift step on a full-size face, or a change in the number of
+  shapes invalidates the whole face object.
+- Blink: the eyes of the current face close from full height to 0.08 over
+  90 ms and reopen over 160 ms, 250 ms in total, every 4 to 8 seconds, in
+  idle and muted. Each segment uses the same smoothstep as the other
+  animations. The design's own periodic blink is not used and a variety
+  moment does not blink.
 - Variety: `idle_happy_eyes` or `idle_curious` for 3 to 5 seconds every 3 to 6
   minutes, idle only.
-- Drift: a step of up to 4 px every 2 to 5 minutes, in every state, clamped to
-  ±20 px from the face's home position.
-- Text clear: 2.5 seconds after the session returns to idle or muted, the
-  transcript and reply clear. Error and no-server messages stay.
+- Drift: a step of up to 4 px every 2 to 5 minutes, added to every shape of
+  the full-size faces and clamped to ±20 px from home. The conversation screen
+  is fixed, because its text cannot move with the face canvas; a step while it
+  is shown only updates the saved offset that the next full-size face uses.
+- Linger: 2.5 seconds after speaking with a reply and returning to idle or
+  muted, the bubble, text and scrollbar clear and the full face returns. Error
+  and no-server messages stay.
 - Dimming: after 30 seconds in idle or muted the panel goes from 60% to 25%.
   Any state change restores 60% and restarts the countdown, and a session
   pauses it.
 
-Blink and drift change only the image object's source or position, and the text
-setters only touch their labels, so LVGL invalidates just those areas. The one
-full-screen invalidation is the touch recovery, which also restores the
-brightness in effect (the init list resends 60%).
+LVGL's own heap is 24 KB (`CONFIG_LV_MEM_SIZE_KILOBYTES` in both
+`sdkconfig.defaults` and the existing `sdkconfig`, since the latter overrides
+the defaults). Sixteen kilobytes left only about 1.8 KB free at the listening
+face's peak, and the conversation screen adds two permanent static labels, a
+clipping viewport and two gradient widgets. Both text buffers are static and
+the font data is in flash, so neither lives in this heap. The 38.4 KB draw
+buffer is still allocated separately by esp_lvgl_port.
+
+The labels change only when their text changes, so LVGL invalidates just those
+areas and the scrolling label is clipped to its viewport. The one full-screen
+invalidation is the touch recovery, which also restores the brightness in
+effect (the init list resends 60%).
 
 A state change logs at info, as do drift steps, dimming and the start and end of
-a variety moment. Blinks log at debug, which the default INFO log level
-compiles out.
+a variety moment. Each face also logs the LVGL heap it leaves free and its peak
+use, once, a second after it appears. Blinks log at debug, which the default
+INFO log level compiles out.
+
 
 ## Voice session
 
