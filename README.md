@@ -1,5 +1,7 @@
 # Stavvy
 
+<p align="center"><img src="docs/stavvy.jpg" alt="Stavvy on its 3D-printed body, showing its idle face" width="270"></p>
+
 Stavvy is a small voice assistant that sits on my desk and has a cute animated face. You
 say "Stavrobot", ask it something, and it shows you what it heard, shows you the answer as
 text, and then reads the answer out loud.
