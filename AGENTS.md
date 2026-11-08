@@ -1,6 +1,17 @@
+# Stavvy
+
+Stavvy is a desk voice assistant with an animated face. It is the voice and screen of
+Stavrobot, driven through havpe-server. `README.md` is the user-facing overview.
+
+Use the name Stavvy everywhere, except where havpe-server or the protocol needs
+something else. The mDNS hostname prefix stays `home-assistant-voice`, because
+havpe-server finds the device by that prefix. The wake word stays "Stavrobot".
+
+The firmware is AGPL-3.0.
+
 # Hardware: Waveshare ESP32-C6-Touch-AMOLED-2.16
 
-All firmware in this repository targets this one board. The project goal is not decided yet.
+All firmware in this repository targets this one board.
 
 Toolchain: ESP-IDF (C). Do not use Arduino, ESPHome or MicroPython. Waveshare's ESP-IDF examples target ESP-IDF v5.5.3.
 
@@ -121,8 +132,8 @@ The spectrogram frontend is `esphome/esp-micro-speech-features` and the inferenc
 is `espressif/esp-tflite-micro`. esp-nn is pinned to 1.1.2 because 1.2.x gave
 wrong outputs and needed a larger arena; the same versions are what ESPHome's
 `micro_wake_word` uses. The streaming inference, op list, arena handling and
-sliding-window averaging are adapted from that component (GPLv3, like this
-firmware), and `wake_word.cpp` keeps its copyright notice. The model is in
+sliding-window averaging are adapted from that component (GPLv3, which the
+AGPLv3 firmware can include), and `wake_word.cpp` keeps its copyright notice. The model is in
 `EMBED_FILES`, so TFLite Micro reads it straight from flash and a normal
 `idf.py flash` writes it as part of the application; there is no model partition.
 

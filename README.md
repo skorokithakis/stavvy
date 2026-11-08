@@ -45,8 +45,9 @@ Touching the screen also redraws it, if the screen ever goes black.
 
 1. Set up Stavrobot and havpe-server, with havpe-server's webhook pointing at Stavrobot.
 2. Build and flash Stavvy (below), with your Wi-Fi details.
-3. Start havpe-server. It finds Stavvy on the network by itself, or you can set
-   `DEVICE_HOST` to Stavvy's IP address.
+3. Start havpe-server with `--network host`. It finds Stavvy on the network by itself,
+   so Stavvy needs no fixed IP address. Set `DEVICE_HOST` only if mDNS does not
+   reach havpe-server, for example across subnets.
 
 Notes:
 
@@ -79,6 +80,11 @@ docker run --rm -it --device=/dev/ttyACM0 --group-add dialout -v "$PWD":/project
 ```
 
 The Wi-Fi details stay in `sdkconfig`, which git ignores.
+
+
+## Body
+
+`body/` has a 3D-printable robot body for the board to sit on. See `body/README.txt`.
 
 
 ## Licence
