@@ -14,6 +14,7 @@ idf_component_register(
         "proto/esphome_api.pb.c"
         "wifi_station.c"
         "mdns_service.c"
+        "motion.c"
         "trigger.c"
         "player.c"
         "touch.c"
