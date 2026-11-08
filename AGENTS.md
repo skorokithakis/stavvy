@@ -319,8 +319,10 @@ its own runs on LVGL timers in the LVGL task, so there is no extra task:
   idle and muted. Each segment uses the same smoothstep as the other
   animations. The design's own periodic blink is not used and a variety
   moment does not blink.
-- Variety: `idle_happy_eyes` or `idle_curious` for 3 to 5 seconds every 3 to 6
-  minutes, idle only.
+- Variety: every 3 to 6 minutes, idle only, `idle_happy_eyes` for 3 to 5
+  seconds or `idle_curious` for exactly 6 seconds. The 6 seconds are one full
+  look cycle (`FACE_CURIOUS_LOOK_PERIOD_MILLISECONDS` in `faces.h`), so every
+  curious moment looks left and right and ends with the eyes centred.
 - Drift: a step of up to 4 px every 2 to 5 minutes, added to every shape of
   the full-size faces and clamped to ±20 px from home. The conversation screen
   is fixed, because its text cannot move with the face canvas; a step while it

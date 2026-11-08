@@ -55,6 +55,11 @@ typedef enum {
 // owns the two segments' timing.
 #define FACE_BLINK_DURATION_MILLISECONDS 250
 
+// One full look cycle of the curious face: centre, left, right, centre. The
+// renderer holds a curious variety moment for exactly this long, so every
+// moment shows the whole cycle and hands back to idle with the eyes centred.
+#define FACE_CURIOUS_LOOK_PERIOD_MILLISECONDS 6000
+
 typedef struct {
     int16_t x1;
     int16_t y1;

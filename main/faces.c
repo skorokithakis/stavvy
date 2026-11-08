@@ -503,7 +503,7 @@ static int build_curious(face_shape_t *shapes, uint32_t elapsed_ms)
     // The look group is the irises, pupils and highlights; the whites stay
     // still. Rounding the offset to whole pixels means the group does not
     // repaint while a keyframe holds it at 0 or +/-10.
-    const float look_x = animation_value(look_keyframes, 7, elapsed_ms, 0, 6000);
+    const float look_x = animation_value(look_keyframes, 7, elapsed_ms, 0, FACE_CURIOUS_LOOK_PERIOD_MILLISECONDS);
     count = add_pill(shapes, count, (int16_t)lroundf(160 + look_x - 46), 176, 92, 92, FACE_COLOUR_ACCENT,
                      FACE_OPAQUE);
     count = add_pill(shapes, count, (int16_t)lroundf(320 + look_x - 46), 176, 92, 92, FACE_COLOUR_ACCENT,

@@ -862,8 +862,14 @@ static void variety_timer_callback(lv_timer_t *timer)
     blink_showing = false;
     variety_showing = true;
     show_face(face);
-    lv_timer_set_period(timer, random_between(DISPLAY_VARIETY_MINIMUM_DURATION_MILLISECONDS,
-                                              DISPLAY_VARIETY_MAXIMUM_DURATION_MILLISECONDS));
+    // The curious face's look cycle is longer than a random duration, so a
+    // random one would cut it off before the look to the right. Happy eyes has
+    // no motion, so any length suits it.
+    const uint32_t showing_period =
+        face == FACE_IDLE_CURIOUS ? FACE_CURIOUS_LOOK_PERIOD_MILLISECONDS
+                                  : random_between(DISPLAY_VARIETY_MINIMUM_DURATION_MILLISECONDS,
+                                                   DISPLAY_VARIETY_MAXIMUM_DURATION_MILLISECONDS);
+    lv_timer_set_period(timer, showing_period);
     ESP_LOGI(TAG, "Variety: showing the %s face", face == FACE_IDLE_CURIOUS ? "curious" : "happy eyes");
 }
 
