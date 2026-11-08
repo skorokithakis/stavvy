@@ -12,6 +12,11 @@
 
 static const char *TAG = "wifi_station";
 
+// The DHCP hostname is what routers list the board as. It is separate from the
+// mDNS hostname in mdns_service.c, which keeps the home-assistant-voice prefix
+// that havpe-server discovers boards by.
+#define DHCP_HOSTNAME "stavvy"
+
 static bool credentials_configured(void)
 {
     return CONFIG_WIFI_SSID[0] != '\0';
@@ -56,7 +61,10 @@ void wifi_station_connect(void)
         ESP_LOGW(TAG, "No Wi-Fi SSID set in menuconfig; the board will not join a network");
     }
 
-    esp_netif_create_default_wifi_sta();
+    esp_netif_t *station_netif = esp_netif_create_default_wifi_sta();
+    // Set before the interface starts so the very first DHCP request carries
+    // the hostname; lwIP only sends option 12 when the netif has one.
+    ESP_ERROR_CHECK(esp_netif_set_hostname(station_netif, DHCP_HOSTNAME));
 
     const wifi_init_config_t initialization_config = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&initialization_config));

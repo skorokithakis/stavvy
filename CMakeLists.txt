@@ -12,4 +12,4 @@ add_compile_definitions(TF_LITE_STATIC_MEMORY)
 set(IDF_TARGET "esp32c6")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(amoledesp32)
+project(stavvy)

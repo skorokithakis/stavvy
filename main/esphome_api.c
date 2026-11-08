@@ -21,7 +21,6 @@
 #include "freertos/task.h"
 
 #include "esphome_api.pb.h"
-#include "mdns_service.h"
 #include "pb_decode.h"
 #include "pb_encode.h"
 
@@ -64,7 +63,8 @@ enum {
 #define API_VERSION_MAJOR 1
 #define API_VERSION_MINOR 10
 
-#define SERVER_INFO "amoledesp32"
+#define SERVER_INFO "stavvy"
+#define DEVICE_NAME "Stavvy"
 #define DEVICE_MODEL "ESP32-C6-Touch-AMOLED-2.16"
 
 // The largest message we encode is VoiceAssistantAudio at 2053 bytes. The
@@ -399,24 +399,20 @@ static void format_mac_address(char *buffer, size_t buffer_size)
 
 static void send_hello_response(void)
 {
-    char hostname[64];
-    mdns_service_get_hostname(hostname, sizeof(hostname));
-
+    // The name is the product name rather than the mDNS hostname: havpe-server
+    // discovers boards by the hostname prefix and only logs this field.
     HelloResponse response = HelloResponse_init_zero;
     response.api_version_major = API_VERSION_MAJOR;
     response.api_version_minor = API_VERSION_MINOR;
     copy_string(response.server_info, sizeof(response.server_info), SERVER_INFO);
-    copy_string(response.name, sizeof(response.name), hostname);
+    copy_string(response.name, sizeof(response.name), DEVICE_NAME);
     send_message(MESSAGE_TYPE_HELLO_RESPONSE, HelloResponse_fields, &response);
 }
 
 static void send_device_info_response(void)
 {
-    char hostname[64];
-    mdns_service_get_hostname(hostname, sizeof(hostname));
-
     DeviceInfoResponse response = DeviceInfoResponse_init_zero;
-    copy_string(response.name, sizeof(response.name), hostname);
+    copy_string(response.name, sizeof(response.name), DEVICE_NAME);
     format_mac_address(response.mac_address, sizeof(response.mac_address));
     copy_string(response.model, sizeof(response.model), DEVICE_MODEL);
     response.voice_assistant_feature_flags =

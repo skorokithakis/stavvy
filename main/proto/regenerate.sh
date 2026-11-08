@@ -11,7 +11,7 @@ project_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 proto_directory="$project_root/main/proto"
 # A throwaway virtualenv keeps the generator's protobuf dependency out of the
 # host Python installation; every invocation starts from a known-good version.
-virtualenv_directory="${TMPDIR:-/tmp}/amoledesp32-nanopb-venv"
+virtualenv_directory="${TMPDIR:-/tmp}/stavvy-nanopb-venv"
 
 python3 -m venv "$virtualenv_directory"
 "$virtualenv_directory/bin/pip" install --quiet --upgrade 'nanopb==0.4.9.1'
