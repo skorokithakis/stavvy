@@ -355,7 +355,7 @@ its own runs on LVGL timers in the LVGL task, so there is no extra task:
   muted, the bubble, text and scrollbar clear and the full face returns. Error
   and no-server messages stay.
 - Dimming: after 30 seconds in idle or muted the panel goes from the chosen
-  full level to 25%. BOOT steps the full level through 40, 60, 80 and 100%,
+  full level to 10%. BOOT steps the full level through 40, 60, 80 and 100%,
   wrapping to 40, applies it at once even when dimmed, and writes it to NVS;
   the default is 60%. A press restarts the countdown in idle or muted. Any
   state change restores the full level and restarts the countdown, and a

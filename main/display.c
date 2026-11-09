@@ -74,8 +74,10 @@ static const uint8_t full_brightness_steps[] = {40, 60, 80, 100};
 #define DISPLAY_BRIGHTNESS_NVS_KEY "brightness"
 // An idle face is mostly there to be glanced at, so a dim panel still shows the
 // expression while using less current. The jump back to the full level is also
-// the clearest "I am listening now" cue the screen has.
-#define DISPLAY_BRIGHTNESS_DIM_PERCENT 25
+// the clearest "I am listening now" cue the screen has. It was 25% at first and
+// was lowered to 10% on request. The muted face's darker colours are the first
+// thing to become hard to see if this goes lower.
+#define DISPLAY_BRIGHTNESS_DIM_PERCENT 10
 // How long an idle or muted screen stays at full brightness before dimming.
 #define DISPLAY_DIM_AFTER_MILLISECONDS (30 * 1000)
 
