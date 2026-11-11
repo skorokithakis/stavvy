@@ -852,9 +852,9 @@ static void show_face(face_id_t face)
 }
 
 // Puts the idle or muted screen on the 30 second dim countdown. A session
-// pauses the timer instead, and error and no-server screens keep full
-// brightness for their message, so when this timer fires the state is known to
-// be one of these two.
+// pauses the timer instead, and error and no-server screens hold full
+// brightness until their message has been up for its five seconds, so when this
+// timer fires the state is known to be one of these two.
 static void restart_dim_timer(void)
 {
     lv_timer_set_period(dim_timer, DISPLAY_DIM_AFTER_MILLISECONDS);
@@ -1085,11 +1085,17 @@ static void drift_timer_callback(lv_timer_t *timer)
 
 // The bubble and reply stay up for a moment after speaking, so the end of the
 // reply is still readable, then the full face returns. This is the old text
-// clear timer, now used for the linger. Error and "No server" messages are
-// never cleared, because they are the only explanation for the state.
+// clear timer, now used for the linger.
 #define DISPLAY_TEXT_CLEAR_AFTER_MILLISECONDS 2500
 
+// An error or "No server" message is the only explanation for its state, so it
+// holds full brightness while it is up. Five seconds is long enough to read one
+// line, and then the screen returns to idle rather than sitting on the message
+// until the next session.
+#define DISPLAY_MESSAGE_CLEAR_AFTER_MILLISECONDS 5000
+
 static lv_timer_t *text_clear_timer;
+static lv_timer_t *message_clear_timer;
 
 static void conversation_show(bool show)
 {
@@ -1397,6 +1403,23 @@ static void text_clear_timer_callback(lv_timer_t *timer)
     }
 }
 
+// The message's five seconds are up. This runs in the LVGL task, where the
+// port's lock is a recursive mutex, so going through display_set_state() is safe
+// and keeps the return to idle identical to the transition the session makes:
+// the message hides, the reply text clears, the full face returns and the dim
+// countdown, blink, variety and motion start again.
+static void message_clear_timer_callback(lv_timer_t *timer)
+{
+    lv_timer_pause(timer);
+    // A state change always pauses this timer, so the message is still on
+    // screen here; the check guards against a future caller that does not.
+    if (current_state != DISPLAY_STATE_ERROR && current_state != DISPLAY_STATE_NO_SERVER) {
+        return;
+    }
+    ESP_LOGI(TAG, "Message shown for %d s, returning to idle", DISPLAY_MESSAGE_CLEAR_AFTER_MILLISECONDS / 1000);
+    display_set_state(DISPLAY_STATE_IDLE);
+}
+
 // The conversation screen and the errors share the reply buffer. The bottom
 // line is visible only for an error or a missing server, and the session always
 // clears both before reporting "No server", so the generic words are only used
@@ -1617,6 +1640,9 @@ void display_init(void)
     lv_timer_pause(motion_relieved_timer);
     text_clear_timer = lv_timer_create(text_clear_timer_callback, DISPLAY_TEXT_CLEAR_AFTER_MILLISECONDS, NULL);
     lv_timer_pause(text_clear_timer);
+    message_clear_timer =
+        lv_timer_create(message_clear_timer_callback, DISPLAY_MESSAGE_CLEAR_AFTER_MILLISECONDS, NULL);
+    lv_timer_pause(message_clear_timer);
     // The board boots into the idle screen, so its dim countdown starts now.
     restart_dim_timer();
     lv_mem_monitor_t lvgl_memory;
@@ -1792,6 +1818,19 @@ void display_set_state(display_state_t state)
     // with no server would otherwise leave the idle face without its message:
     // the clear happens, then the state comparison above skips the redraw.
     show_state_message(state);
+
+    // Every call for an error or "No server" restarts the five second hold,
+    // including a repeat of the same state: the session reports "No server"
+    // again on a second trigger, and a RUN_END after an error re-sends the
+    // error. A repeat must therefore not keep the first message's remaining
+    // time. Every other state stops the hold, so a message cannot be cleared
+    // over a face that has already replaced it.
+    if (state == DISPLAY_STATE_ERROR || state == DISPLAY_STATE_NO_SERVER) {
+        lv_timer_reset(message_clear_timer);
+        lv_timer_resume(message_clear_timer);
+    } else {
+        lv_timer_pause(message_clear_timer);
+    }
 
     lvgl_port_unlock();
 }

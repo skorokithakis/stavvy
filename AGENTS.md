@@ -238,7 +238,14 @@ Which screen each state uses:
 - Speaking without text (shortcuts and error sounds): the full-size speaking
   face.
 - Idle, listening, muted, error and no server: the full-size faces. Error and
-  no server show their message in the bottom line.
+  no server show their message in the bottom line for 5 s, then return to
+  idle. The countdown restarts on every `display_set_state()` for one of those
+  two states, so a repeated error or "No server" gets a full 5 s. The return to
+  idle runs the normal idle transition, so the message and reply clear, the dim
+  countdown starts and blink, variety and motion resume. If the server sends
+  ERROR without a following RUN_END, the face is idle while the session still
+  waits for its thinking timeout, and the session's own return to idle shows the
+  error again for another 5 s.
 - After speaking: the C2 bubble and the user bubble stay for 2.5 s with the
   mini idle face, at the final scroll position. Then the full-size face of the
   current state returns and both texts clear. An error switches to the full
@@ -353,13 +360,17 @@ its own runs on LVGL timers in the LVGL task, so there is no extra task:
   is shown only updates the saved offset that the next full-size face uses.
 - Linger: 2.5 seconds after speaking with a reply and returning to idle or
   muted, the bubble, text and scrollbar clear and the full face returns. Error
-  and no-server messages stay.
+  and no-server messages hold for their own 5 seconds, then the screen returns
+  to idle. That hold has its own timer, which every state other than error and
+  no server pauses; it is not stopped by the linger timer and does not restart
+  it.
 - Dimming: after 30 seconds in idle or muted the panel goes from the chosen
   full level to 10%. BOOT steps the full level through 40, 60, 80 and 100%,
   wrapping to 40, applies it at once even when dimmed, and writes it to NVS;
   the default is 60%. A press restarts the countdown in idle or muted. Any
   state change restores the full level and restarts the countdown, and a
-  session pauses it.
+  session pauses it. The countdown for an error or no-server screen starts when
+  its 5 seconds end and the screen becomes idle.
 - Motion: picking the board up in idle or muted replaces the state's face with
   the surprised face, at the full brightness and with the dim countdown
   paused. A blink or variety moment is dropped. Putting it down shows the
