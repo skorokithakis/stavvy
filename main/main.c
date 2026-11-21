@@ -22,6 +22,10 @@
 #include "display.h"
 #include "esphome_api.h"
 #include "mdns_service.h"
+#include "metrics.h"
+// Generated into the build directory by main/CMakeLists.txt. main.c reads only
+// METRICS_PUSH_ENABLED, to size the heartbeat task's stack.
+#include "metrics_credentials.h"
 #include "motion.h"
 #include "player.h"
 #include "touch.h"
@@ -35,7 +39,15 @@ static const char *TAG = "main";
 // long run. The task is not subscribed to the watchdog: it sleeps for a minute
 // at a time by design, and a hang in it would not stop the rest of the board.
 #define DIAGNOSTICS_HEARTBEAT_INTERVAL_MS 60000
+// The metrics push runs in this task and adds the esp_http_client, lwIP
+// getaddrinfo and HTTP formatting call chains underneath the log line, so the
+// stack has to cover them as well. A build without metrics credentials does not
+// push anything and keeps the smaller stack.
+#if METRICS_PUSH_ENABLED
+#define DIAGNOSTICS_HEARTBEAT_STACK_BYTES 6144
+#else
 #define DIAGNOSTICS_HEARTBEAT_STACK_BYTES 4096
+#endif
 #define DIAGNOSTICS_HEARTBEAT_PRIORITY 2
 
 static const char *reset_reason_name(esp_reset_reason_t reason)
@@ -77,7 +89,7 @@ static const char *reset_reason_name(esp_reset_reason_t reason)
     return "unrecognised";
 }
 
-static void log_heartbeat(void)
+static void log_heartbeat(const board_power_status *power)
 {
     wifi_ap_record_t access_point;
     const bool wifi_connected = esp_wifi_sta_get_ap_info(&access_point) == ESP_OK;
@@ -97,16 +109,18 @@ static void log_heartbeat(void)
         snprintf(panel_text, sizeof(panel_text), "unknown");
     }
 
-    board_power_log_status();
+    board_power_log_status(power);
 
     ESP_LOGI(TAG,
              "Heartbeat: uptime %lu s, free heap %u bytes, minimum free heap %u bytes, largest free block %u "
-             "bytes, Wi-Fi %s (RSSI %s), API client %s, session %s, microphone %s, panel power mode %s",
+             "bytes, Wi-Fi %s (RSSI %s), API client %s, session %s, microphone %s, panel power mode %s, "
+             "heartbeat stack free %u bytes",
              (unsigned long)(esp_timer_get_time() / 1000000), (unsigned)esp_get_free_heap_size(),
              (unsigned)esp_get_minimum_free_heap_size(),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT), wifi_connected ? "connected" : "down",
              rssi_text, esphome_api_client_connected() ? "connected" : "none", voice_session_state_name(),
-             voice_session_is_muted() ? "muted" : "unmuted", panel_text);
+             voice_session_is_muted() ? "muted" : "unmuted", panel_text,
+             (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
 }
 
 static void heartbeat_task(void *argument)
@@ -114,7 +128,19 @@ static void heartbeat_task(void *argument)
     (void)argument;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(DIAGNOSTICS_HEARTBEAT_INTERVAL_MS));
-        log_heartbeat();
+        // One PMIC reading feeds both the log line and the snapshot, so they
+        // report the same moment. A failed read is passed on as NULL and both
+        // leave the values out.
+        board_power_status power;
+        const board_power_status *power_status = NULL;
+        if (board_power_read_status(&power) == ESP_OK) {
+            power_status = &power;
+        }
+        log_heartbeat(power_status);
+        // After the log line, so the snapshot reports the same heap and state
+        // that the line just described. It skips itself during a session and
+        // never retries, so it cannot delay the next heartbeat.
+        metrics_push(power_status);
     }
 }
 
@@ -180,6 +206,9 @@ void app_main(void)
     const esp_reset_reason_t reset_reason = esp_reset_reason();
     ESP_LOGI(TAG, "Booting; reset reason %s (%d)", reset_reason_name(reset_reason), (int)reset_reason);
     log_heap_usage("at boot");
+    // Says once whether the metrics push is compiled in, and builds its URL from
+    // the MAC suffix. Nothing about the credentials appears here.
+    metrics_init();
 
     // The Wi-Fi driver stores calibration data and the station configuration in
     // NVS, so it has to be initialised before esp_wifi_init().

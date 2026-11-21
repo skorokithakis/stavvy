@@ -1,5 +1,6 @@
 #include "board_power.h"
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "driver/i2c_master.h"
@@ -94,38 +95,43 @@ void board_power_init(void)
     ESP_LOGI(TAG, "AXP2101 configured, peripheral rails at 3.3 V; power-off status 0x%02X", power_off_status);
 }
 
-void board_power_log_status(void)
+void board_power_log_status(const board_power_status *status)
 {
-    uint8_t rail_enable = 0;
-    uint8_t status1 = 0;
-    uint8_t status2 = 0;
-    uint8_t battery_high = 0;
-    uint8_t battery_low = 0;
-    uint8_t system_high = 0;
-    uint8_t system_low = 0;
-    uint8_t temperature_high = 0;
-    uint8_t temperature_low = 0;
-
-    if (try_read_register(0x90, &rail_enable) != ESP_OK || try_read_register(0x00, &status1) != ESP_OK ||
-        try_read_register(0x01, &status2) != ESP_OK || try_read_register(0x34, &battery_high) != ESP_OK ||
-        try_read_register(0x35, &battery_low) != ESP_OK || try_read_register(0x3A, &system_high) != ESP_OK ||
-        try_read_register(0x3B, &system_low) != ESP_OK || try_read_register(0x3C, &temperature_high) != ESP_OK ||
-        try_read_register(0x3D, &temperature_low) != ESP_OK) {
+    if (status == NULL) {
         ESP_LOGW(TAG, "Could not read the AXP2101 status");
         return;
     }
 
-    // Both voltages are 1 mV per count. The die temperature follows the
-    // AXP2101 convention of 22 C at a raw value of 7274, with 0.05 C per count.
-    const uint16_t battery_millivolts = (uint16_t)(((battery_high & 0x3F) << 8) | battery_low);
-    const uint16_t system_millivolts = (uint16_t)(((system_high & 0x3F) << 8) | system_low);
-    const uint16_t temperature_raw = (uint16_t)(((temperature_high & 0x3F) << 8) | temperature_low);
-    const int temperature_tenths = 220 + (7274 - (int)temperature_raw) / 2;
-
     ESP_LOGI(TAG,
              "AXP2101: rails 0x90=0x%02X, status 0x00=0x%02X 0x01=0x%02X, vbat %u mV (raw %u), vsys %u mV (raw "
              "%u), die %d.%d C (raw %u)",
-             rail_enable, status1, status2, battery_millivolts, (unsigned)battery_millivolts, system_millivolts,
-             (unsigned)system_millivolts, temperature_tenths / 10, temperature_tenths % 10,
-             (unsigned)temperature_raw);
+             status->rail_enable, status->status1, status->status2, status->battery_millivolts,
+             (unsigned)status->battery_millivolts, status->system_millivolts, (unsigned)status->system_millivolts,
+             status->temperature_tenths / 10, status->temperature_tenths % 10, (unsigned)status->temperature_raw);
+}
+
+esp_err_t board_power_read_status(board_power_status *status)
+{
+    // Register 0x90 is the rail enable mask, 0x00 and 0x01 are the charger
+    // status, and the pairs are the battery and VSYS voltages and the die
+    // temperature.
+    enum { REGISTER_COUNT = 9 };
+    static const uint8_t registers[REGISTER_COUNT] = {0x90, 0x00, 0x01, 0x34, 0x35, 0x3A, 0x3B, 0x3C, 0x3D};
+    uint8_t values[REGISTER_COUNT];
+    for (size_t index = 0; index < REGISTER_COUNT; index++) {
+        const esp_err_t result = try_read_register(registers[index], &values[index]);
+        if (result != ESP_OK) {
+            return result;
+        }
+    }
+
+    status->rail_enable = values[0];
+    status->status1 = values[1];
+    status->status2 = values[2];
+    // Both voltages are 1 mV per count.
+    status->battery_millivolts = (uint16_t)(((values[3] & 0x3F) << 8) | values[4]);
+    status->system_millivolts = (uint16_t)(((values[5] & 0x3F) << 8) | values[6]);
+    status->temperature_raw = (uint16_t)(((values[7] & 0x3F) << 8) | values[8]);
+    status->temperature_tenths = 220 + (7274 - (int)status->temperature_raw) / 2;
+    return ESP_OK;
 }

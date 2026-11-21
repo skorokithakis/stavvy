@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "metrics.h"
 #include "wake_word.h"
 
 static const char *TAG = "trigger";
@@ -190,6 +191,9 @@ static void run_detection(void)
 
         if (wake_word_process(frame_samples, WAKE_WORD_FRAME_SAMPLES)) {
             ESP_LOGI(TAG, "Detected wake word");
+            // Atomic and non-blocking: the detection loop must not wait on
+            // anything outside its own path.
+            metrics_count_wake_word();
             trigger_callback();
         }
     }

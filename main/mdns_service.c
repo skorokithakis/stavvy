@@ -13,14 +13,20 @@ static const char *TAG = "mdns_service";
 #define ESPHOME_API_PROTOCOL "_tcp"
 #define ESPHOME_API_PORT 6053
 
-void mdns_service_get_hostname(char *hostname, size_t hostname_size)
+void mdns_service_get_mac_suffix(char *suffix, size_t suffix_size)
 {
     uint8_t mac_address[6];
     ESP_ERROR_CHECK(esp_read_mac(mac_address, ESP_MAC_WIFI_STA));
+    snprintf(suffix, suffix_size, "%02x%02x%02x", mac_address[3], mac_address[4], mac_address[5]);
+}
+
+void mdns_service_get_hostname(char *hostname, size_t hostname_size)
+{
+    char suffix[8];
+    mdns_service_get_mac_suffix(suffix, sizeof(suffix));
     // The management server finds boards by this prefix, so the MAC suffix is
     // what keeps every board's hostname unique without any provisioning step.
-    snprintf(hostname, hostname_size, MDNS_HOSTNAME_PREFIX "-%02x%02x%02x", mac_address[3], mac_address[4],
-             mac_address[5]);
+    snprintf(hostname, hostname_size, MDNS_HOSTNAME_PREFIX "-%s", suffix);
 }
 
 void mdns_service_start(void)

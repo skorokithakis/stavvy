@@ -79,12 +79,17 @@ Then connect the board over USB, and build and flash:
 
 ```sh
 docker run --rm -it --device=/dev/ttyACM0 --group-add dialout -v "$PWD":/project -w /project \
-    -u "$(id -u):$(id -g)" -e HOME=/tmp espressif/idf:v5.5.3 \
+    -u "$(id -u):$(id -g)" -e HOME=/tmp -e VM_USERNAME -e VM_PASSWORD espressif/idf:v5.5.3 \
     idf.py -p /dev/ttyACM0 flash monitor
 ```
 
 Your Wi-Fi details stay in `sdkconfig`, which git ignores, so you won't commit them by
 accident.
+
+`VM_USERNAME` and `VM_PASSWORD` are the VictoriaMetrics credentials for the metrics push. If
+either is unset the push is compiled out and the rest of the firmware is unaffected. They
+are written to a generated header in `build/`, never logged and never committed; changing
+them needs a clean build or `idf.py reconfigure`.
 
 
 ## Body

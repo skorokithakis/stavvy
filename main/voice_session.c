@@ -18,6 +18,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "metrics.h"
 #include "player.h"
 #include "sdkconfig.h"
 #include "trigger.h"
@@ -178,6 +179,10 @@ static bool session_started;
 // Kept until the next session starts so the screen can keep showing why the
 // last session failed after the state line has gone back to idle.
 static bool session_had_error;
+// Why the running session will be counted as ending. The first reason wins, so
+// a server ERROR event followed by a missed deadline is still an error rather
+// than a timeout, and return_to_idle() reports it exactly once.
+static metrics_session_outcome ending_outcome;
 // The requested microphone mute state. KEY flips it; the trigger is only
 // enabled while it is false. It starts false on every boot and is not stored.
 static _Atomic bool muted;
@@ -191,6 +196,13 @@ static void handle_notifications(void);
 static void drain_messages(void);
 static void discard_pending_messages(void);
 static void return_to_idle(void);
+
+static void record_ending_outcome(metrics_session_outcome outcome)
+{
+    if (ending_outcome == METRICS_SESSION_OUTCOME_REPLY) {
+        ending_outcome = outcome;
+    }
+}
 
 static int64_t now_microseconds(void)
 {
@@ -335,6 +347,7 @@ static void return_to_idle(void)
     audio_capture_stop();
     state = SESSION_STATE_IDLE;
     deadline_microseconds = 0;
+    metrics_count_session(ending_outcome);
 
     if (muted) {
         display_set_state(DISPLAY_STATE_MUTED);
@@ -415,12 +428,14 @@ static void start_session(void)
     }
 
     discard_pending_messages();
+    ending_outcome = METRICS_SESSION_OUTCOME_REPLY;
 
     if (!esphome_api_voice_assistant_subscribed()) {
         display_set_transcript("");
         display_set_reply("");
         display_set_state(DISPLAY_STATE_NO_SERVER);
         ESP_LOGW(TAG, "Trigger with no subscribed API client, staying idle");
+        metrics_count_session(METRICS_SESSION_OUTCOME_NO_SERVER);
         return;
     }
 
@@ -437,6 +452,7 @@ static void start_session(void)
     if (result != ESP_OK) {
         ESP_LOGE(TAG, "Could not start a voice session with the API client (0x%x)", result);
         session_had_error = true;
+        record_ending_outcome(METRICS_SESSION_OUTCOME_ERROR);
         display_set_reply("Could not reach the server.");
         return_to_idle();
         return;
@@ -469,6 +485,7 @@ static void handle_voice_response(uint32_t port, bool error)
         ESP_LOGE(TAG, "The client could not start the session (port %u, error %d)", (unsigned)port, error);
         esphome_api_send_voice_assistant_request(false, NULL);
         session_had_error = true;
+        record_ending_outcome(METRICS_SESSION_OUTCOME_ERROR);
         display_set_reply("The server could not start the request.");
         return_to_idle();
         return;
@@ -479,6 +496,7 @@ static void handle_voice_response(uint32_t port, bool error)
         ESP_LOGE(TAG, "Could not open the microphone for streaming (0x%x)", result);
         esphome_api_send_voice_assistant_request(false, NULL);
         session_had_error = true;
+        record_ending_outcome(METRICS_SESSION_OUTCOME_ERROR);
         display_set_reply("Could not open the microphone.");
         return_to_idle();
         return;
@@ -566,6 +584,7 @@ static void handle_voice_event(int event_type, const char *text)
 
     case ESPHOME_API_EVENT_ERROR:
         session_had_error = true;
+        record_ending_outcome(METRICS_SESSION_OUTCOME_ERROR);
         audio_capture_stop();
         if (state != SESSION_STATE_SPEAKING) {
             state = SESSION_STATE_THINKING;
@@ -599,6 +618,7 @@ static void handle_voice_event(int event_type, const char *text)
         if (result != ESP_OK) {
             ESP_LOGE(TAG, "Could not queue %s for playback (0x%x)", text, result);
             session_had_error = true;
+            record_ending_outcome(METRICS_SESSION_OUTCOME_ERROR);
             display_set_reply("Could not play the reply.");
             return_to_idle();
         }
@@ -628,6 +648,7 @@ static void handle_client_disconnected(void)
     }
     ESP_LOGW(TAG, "API client disconnected during a session, stopping");
     audio_capture_stop();
+    record_ending_outcome(METRICS_SESSION_OUTCOME_DISCONNECTED);
     // Safe here because this runs in the session task, not in the player
     // callback that player_stop() would wait for.
     player_stop();
@@ -645,6 +666,7 @@ static void handle_playback_finished(esp_err_t result)
         // some replies, so only a real error is reported here.
         ESP_LOGE(TAG, "Playing the reply failed (0x%x)", result);
         session_had_error = true;
+        record_ending_outcome(METRICS_SESSION_OUTCOME_ERROR);
         display_set_reply("Could not play the reply.");
     }
     return_to_idle();
@@ -674,6 +696,7 @@ static void handle_tick(void)
         ESP_LOGW(TAG, "Playback did not finish within %d seconds, stopping",
                  (int)(SESSION_SPEAKING_TIMEOUT_MICROSECONDS / 1000000));
         session_had_error = true;
+        record_ending_outcome(METRICS_SESSION_OUTCOME_TIMEOUT);
         display_set_reply("Playback stopped.");
         player_stop();
         return_to_idle();
@@ -688,6 +711,7 @@ static void handle_tick(void)
                  (int)(SESSION_RESPONSE_TIMEOUT_MICROSECONDS / 1000000));
         esphome_api_disconnect_client();
         session_had_error = true;
+        record_ending_outcome(METRICS_SESSION_OUTCOME_TIMEOUT);
         display_set_reply("The server did not answer.");
         return_to_idle();
     } else if (state == SESSION_STATE_THINKING) {
@@ -695,6 +719,7 @@ static void handle_tick(void)
                  (int)(SESSION_THINKING_TIMEOUT_MICROSECONDS / 1000000));
         esphome_api_send_voice_assistant_request(false, NULL);
         session_had_error = true;
+        record_ending_outcome(METRICS_SESSION_OUTCOME_TIMEOUT);
         display_set_reply("The server stopped responding.");
         return_to_idle();
     }
@@ -715,6 +740,7 @@ static void stream_audio(void)
         if (read_result != ESP_OK) {
             ESP_LOGE(TAG, "Microphone read failed while streaming (0x%x)", read_result);
             session_had_error = true;
+            record_ending_outcome(METRICS_SESSION_OUTCOME_ERROR);
             display_set_reply("The microphone stopped working.");
             break;
         }
@@ -725,8 +751,12 @@ static void stream_audio(void)
             esphome_api_send_audio((const uint8_t *)samples, SESSION_AUDIO_CHUNK_BYTES, false);
         if (send_result != ESP_OK) {
             // A failed write also makes the API task drop the client, which
-            // posts a disconnect; ending here avoids streaming into nothing.
+            // posts a disconnect; ending here avoids streaming into nothing. If
+            // the client is already gone, this was a disconnect rather than a
+            // local send failure.
             ESP_LOGW(TAG, "Sending audio failed (0x%x), ending the session", send_result);
+            record_ending_outcome(esphome_api_client_connected() ? METRICS_SESSION_OUTCOME_ERROR
+                                                                 : METRICS_SESSION_OUTCOME_DISCONNECTED);
             break;
         }
 
@@ -738,6 +768,7 @@ static void stream_audio(void)
                      (int)(SESSION_STREAMING_TIMEOUT_MICROSECONDS / 1000000));
             esphome_api_send_voice_assistant_request(false, NULL);
             session_had_error = true;
+            record_ending_outcome(METRICS_SESSION_OUTCOME_TIMEOUT);
             display_set_reply("The server stopped responding.");
             break;
         }
@@ -888,7 +919,9 @@ void voice_session_handle_key_button(void)
     // KEY has to toggle mute even while the queue is full or a session owns the
     // microphone, so it is a notification rather than a queued message. The
     // counter is incremented first: the notification is only a wake-up, and
-    // the session must be able to see every press that preceded it.
+    // the session must be able to see every press that preceded it. The metrics
+    // counter is atomic, so counting here cannot block the button task.
+    metrics_count_key_press();
     atomic_fetch_add(&key_press_count, 1);
     xTaskNotify(session_task_handle, SESSION_NOTIFICATION_KEY_BUTTON, eSetBits);
 }
@@ -908,4 +941,9 @@ const char *voice_session_state_name(void)
 bool voice_session_is_muted(void)
 {
     return atomic_load(&muted);
+}
+
+bool voice_session_is_idle(void)
+{
+    return atomic_load(&state) == SESSION_STATE_IDLE;
 }

@@ -84,7 +84,7 @@ The ESP-IDF toolchain is not installed on the host. Use Espressif's v5.5.3 Docke
 docker pull espressif/idf:v5.5.3
 
 docker run --rm -v "$PWD":/project -w /project -u "$(id -u):$(id -g)" -e HOME=/tmp \
-    espressif/idf:v5.5.3 idf.py build
+    -e VM_USERNAME -e VM_PASSWORD espressif/idf:v5.5.3 idf.py build
 ```
 
 The first build downloads the mDNS component from the ESP component registry, so it needs network access.
@@ -93,7 +93,7 @@ Flash and watch the log over the board's USB port. `--group-add dialout` lets th
 
 ```sh
 docker run --rm -it --device=/dev/ttyACM0 --group-add dialout -v "$PWD":/project -w /project \
-    -u "$(id -u):$(id -g)" -e HOME=/tmp espressif/idf:v5.5.3 \
+    -u "$(id -u):$(id -g)" -e HOME=/tmp -e VM_USERNAME -e VM_PASSWORD espressif/idf:v5.5.3 \
     idf.py -p /dev/ttyACM0 flash monitor
 ```
 
@@ -486,6 +486,57 @@ reply is never cut off. Mute starts false on every boot and is not stored.
 `CONFIG_SESSION_SIMULATED_TRIGGER` raises a simulated wake word trigger three
 seconds after an API client connects, for bench checks without speaking to the
 board. It is off by default and is ignored while muted.
+
+## Metrics
+
+The heartbeat task pushes one Prometheus text snapshot a minute to
+`http://metrics.home.stavros.io:38461/api/v1/import/prometheus`, with HTTP basic
+auth, right after its log line. Two query parameters label every series:
+`extra_label=job=stavvy` and `extra_label=instance=stavvy-xxxxxx`, where
+`xxxxxx` is the last three MAC bytes in lowercase hex, the same suffix that
+makes the mDNS hostname unique (`mdns_service_get_mac_suffix()` builds it for
+both). The URL is built once at boot. The body is a static 2 KB buffer in
+`main/metrics.c`, so it never sits on the heartbeat task's stack, and the HTTP
+timeout is 5 seconds.
+
+The push is skipped while a voice session is not idle, so streaming and playback
+keep the Wi-Fi connection, heap and CPU to themselves. Any failure, including a
+non-2xx status or the timeout, logs one warning and increments
+`stavvy_metrics_push_failures_total`; there is no retry and no buffering, so the
+next heartbeat is the retry.
+
+`VM_USERNAME` and `VM_PASSWORD` are read from the build environment when CMake
+configures `main/CMakeLists.txt` and written to `metrics_credentials.h` in the
+build directory, which is git-ignored. Nothing in `main/metrics.c` logs them, and
+`esp_http_client` only prints the Authorization header at debug level, which the
+default INFO log level compiles out and `metrics_init()` also pins to INFO at
+runtime. If either value is empty the push and its counters are compiled out and
+one boot line says so. CMake does not track environment variables, so changing
+the credentials needs `idf.py reconfigure` in the container (or a clean
+`build/`), with the new values passed to that build.
+
+The gauges are `stavvy_uptime_seconds`, `stavvy_heap_free_bytes`,
+`stavvy_heap_minimum_free_bytes`, `stavvy_heap_largest_free_block_bytes`,
+`stavvy_wifi_rssi_dbm` (absent while Wi-Fi is down),
+`stavvy_api_client_connected`, `stavvy_microphone_muted`,
+`stavvy_battery_volts`, `stavvy_system_volts` and
+`stavvy_pmic_temperature_celsius` (the last three absent when the AXP2101 read
+fails), and `stavvy_boot_info{reset_reason="..."} 1`, with snake_case reason
+names. The three power values come from the heartbeat's single
+`board_power_read_status()` reading, the same reading the log line reports. The
+counters are `stavvy_wake_words_total`,
+`stavvy_sessions_total{outcome="..."}` with `reply`, `no_server`, `error`,
+`timeout` and `disconnected`, `stavvy_key_presses_total`,
+`stavvy_display_recoveries_total` and `stavvy_metrics_push_failures_total`. A
+session is counted exactly once, with the first reason it failed: a normal end
+is `reply`, and a server `ERROR` event followed by a missed deadline stays
+`error` rather than becoming `timeout`. The counters are C11 atomics, so the
+trigger, button, display and session tasks increment them without blocking.
+
+The heartbeat task's stack is 6 KB when the push is compiled in, because
+`esp_http_client` and lwIP's `getaddrinfo` run underneath the log line, and 4 KB
+when it is not. The heartbeat line ends with the task's remaining stack so the
+size can be reduced if it turns out generous.
 
 ## Robot body
 

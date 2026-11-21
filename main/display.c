@@ -23,6 +23,7 @@
 #include "faces.h"
 #include "freertos/task.h"
 #include "lvgl.h"
+#include "metrics.h"
 #include "nvs.h"
 #include "sdkconfig.h"
 
@@ -522,6 +523,9 @@ static void recover_panel(void)
         ESP_LOGE(TAG, "Re-initialising the panel failed (0x%x)", init_result);
         return;
     }
+    // Counted only when the panel actually took the init list; a failed attempt
+    // leaves the screen as it was, so it is not a recovery.
+    metrics_count_display_recovery();
     // The init list resends the brightness command at full brightness, so a
     // dimmed idle screen would come back bright. Restore the value in effect.
     apply_brightness(brightness_percent);

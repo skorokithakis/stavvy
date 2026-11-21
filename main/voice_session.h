@@ -36,3 +36,7 @@ void voice_session_handle_key_button(void);
 // written only by the session task and read atomically here.
 const char *voice_session_state_name(void);
 bool voice_session_is_muted(void);
+
+// True while no session is running. The metrics push uses this to stay out of
+// the heap, Wi-Fi and CPU that a session needs.
+bool voice_session_is_idle(void);
