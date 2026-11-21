@@ -86,10 +86,39 @@ docker run --rm -it --device=/dev/ttyACM0 --group-add dialout -v "$PWD":/project
 Your Wi-Fi details stay in `sdkconfig`, which git ignores, so you won't commit them by
 accident.
 
-`VM_USERNAME` and `VM_PASSWORD` are the VictoriaMetrics credentials for the metrics push. If
-either is unset the push is compiled out and the rest of the firmware is unaffected. They
-are written to a generated header in `build/`, never logged and never committed; changing
-them needs a clean build or `idf.py reconfigure`.
+The `-e VM_USERNAME -e VM_PASSWORD` part passes the metrics credentials into the build, see
+below.
+
+
+## Metrics
+
+Once a minute, Stavvy pushes some metrics to a VictoriaMetrics server, in Prometheus text
+format, to `http://metrics.home.stavros.io:38461/api/v1/import/prometheus`. That's plain
+HTTP with basic auth, so again, only on a network you trust.
+
+The credentials come from two environment variables, which you set before you build:
+
+```sh
+export VM_USERNAME=your-username
+export VM_PASSWORD=your-password
+```
+
+The build reads them and puts them in a generated header in `build/`, which git ignores,
+so they never get committed, and the firmware never logs them. If either one is empty,
+the metrics code is compiled out and Stavvy works exactly as before. CMake only reads the
+variables when it configures the project, so if you change them, run `idf.py reconfigure`
+(with the variables passed in) or delete `build/`.
+
+Every series has `job="stavvy"` and `instance="stavvy-xxxxxx"`, where `xxxxxx` is the end
+of the board's MAC address, and every metric name starts with `stavvy_`. You get uptime,
+heap, Wi-Fi signal, battery and system voltage, the power chip's temperature, whether the
+microphone is muted, whether havpe-server is connected and why the board last restarted.
+There are also counters for wake words, sessions (by how they ended), KEY presses, screen
+recoveries and failed pushes.
+
+Stavvy doesn't push while it's in a conversation, so the push never gets in the way of the
+audio. If a push fails, it logs a warning and tries again a minute later, and nothing else
+is affected.
 
 
 ## Body
