@@ -98,7 +98,7 @@ typedef struct {
     int32_t text_height;
     int32_t scroll_offset;
     // Zero when the transcript is empty or the screen is a full-size layout.
-    // In C2 the height is always 44; in C1 it is the measured wrapped bubble.
+    // In C2 the height is always 47; in C1 it is the measured wrapped bubble.
     int32_t user_bubble_width;
     int32_t user_bubble_height;
 } face_context_t;

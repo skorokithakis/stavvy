@@ -1,5 +1,6 @@
 #!/bin/sh
-# Regenerates dm_sans_semibold_26.c from the static DM Sans SemiBold TTF.
+# Regenerates the DM Sans fonts the conversation screen uses from the static
+# DM Sans SemiBold and Italic TTFs.
 #
 # The variable DMSans[opsz,wght].ttf cannot be used: lv_font_conv has no way to
 # select a weight from a variable font. The static SemiBold face is committed
@@ -40,6 +41,6 @@ generate() {
         --output "${name}.c"
 }
 
-generate DMSans-SemiBold.ttf 26 dm_sans_semibold_26
-generate DMSans-Italic.ttf 24 dm_sans_italic_24
-generate DMSans-Italic.ttf 18 dm_sans_italic_18
+generate DMSans-SemiBold.ttf 28 dm_sans_semibold_28
+generate DMSans-Italic.ttf 26 dm_sans_italic_26
+generate DMSans-Italic.ttf 20 dm_sans_italic_20
